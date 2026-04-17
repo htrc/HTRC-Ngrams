@@ -1,0 +1,30 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+
+# Output / results
+results/
+*.csv
+*.xlsx
+
+# Pairtree data & Corpus (large local data, not source code)
+pairtree/
+Volumes/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local Dev Scripts
+local_pairtree_usage.py
+
+# Input data
+htids.txt
