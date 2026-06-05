@@ -9,8 +9,8 @@
 #SBATCH --time=04:00:00
 #SBATCH --partition=general
 #SBATCH --mail-type=END,FAIL
-#SBATCH --output=ngrams_%j.out
-#SBATCH --error=ngrams_%j.err
+#SBATCH --output=/N/project/htrc/HTRC-Ngrams/logs/ngrams_%A_%a.out
+#SBATCH --error=/N/project/htrc/HTRC-Ngrams/logs/ngrams_%A_%a.err
 
 # ---------------------------------------------------------------------------
 # BigRed200 HTRC N-grams Execution Script
@@ -39,12 +39,13 @@ ID_LIST="htids.txt"
 echo "Commencing HPC massive Pairtree reading pipeline..."
 
 # The central orchestrator runs the modular package execution
-python3 run_pipeline.py \
+python3 -u run_pipeline.py \
     --pairtree "$PAIRTREE_ROOT" \
     --id-list "$ID_LIST" \
     --min-freq 2 \
     --min-pmi 0.0 \
-    --max-exposure 0.15
+    --max-exposure 0.15 \
+    --flat-output
 
 echo "=========================================================="
 echo "Job End Time: $(date)"

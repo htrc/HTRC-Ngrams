@@ -25,12 +25,27 @@ def resolve_language(htid: str, pages: list):
     
     try:
         import langid
-        langid.set_languages(['en', 'fr', 'es', 'de'])
+
+        # Lock the classifier to our 10 supported languages.
+        # Prevents misclassification into micro-dialects (e.g. German -> Luxembourgish).
+        langid.set_languages(['en', 'fr', 'es', 'de', 'it', 'pt', 'ru', 'zh', 'ja', 'ar'])
         iso_code, confidence = langid.classify(sample_text)
-        
-        marc_map = {'en': 'eng', 'fr': 'fra', 'es': 'spa', 'de': 'deu'}
+
+        # Map ISO 639-1 (2-letter) codes to HathiTrust MARC (3-letter) codes
+        marc_map = {
+            'en': 'eng',  # English
+            'fr': 'fra',  # French
+            'es': 'spa',  # Spanish
+            'de': 'deu',  # German
+            'it': 'ita',  # Italian
+            'pt': 'por',  # Portuguese
+            'ru': 'rus',  # Russian
+            'zh': 'zho',  # Chinese
+            'ja': 'jpn',  # Japanese
+            'ar': 'ara',  # Arabic
+        }
         best_lang = marc_map.get(iso_code, iso_code)
-        
+
         print(f"  [Language Resolver] 🔍 STAGE 2 SUCCESS: 'langid' ML profiled base text as '{best_lang}' (Confidence: {confidence:.2f})")
         return best_lang
         
@@ -68,14 +83,42 @@ def is_header_footer(line: str, profile: dict) -> bool:
         
     words = upper_line.split()
     if 1 <= len(words) <= 3 and len(line_clean) < 20:
-        if re.search(r'[A-Z]', upper_line) and line_clean == upper_line:
+        if line_clean.isupper():
             return True
             
     return False
 
-def tokenize_page(text: str, profile: dict):
+def tokenize_page(text: str, profile: dict, lang: str = ""):
     """Clean, line-strip, and token-merge a single page, capturing ' and -."""
     if profile["script"] == "cjk":
+        # Handle Chinese tokenization using jieba
+        if lang == "zho":
+            try:
+                import jieba  # pyrefly: ignore [missing-import]
+                clean_text = re.sub(r'\s+', '', text)
+                tokens = jieba.cut(clean_text)
+                # Keep only tokens that are purely CJK characters (Unicode range U+4E00–U+9FFF)
+                # This filters out Latin OCR noise mixed into Chinese scans
+                return [t for t in tokens if t and re.fullmatch(r'[\u4e00-\u9fff]+', t)]
+            except ImportError:
+                raise ImportError("jieba (Chinese NLP segmenter)")
+        # Handle Japanese tokenization using janome
+        elif lang == "jpn":
+            try:
+                from janome.tokenizer import Tokenizer  # pyrefly: ignore [missing-import]
+                t = Tokenizer()
+                clean_text = re.sub(r'\s+', '', text)
+                tokens = [tok.surface for tok in t.tokenize(clean_text)]
+                # Keep only tokens containing CJK, Hiragana, or Katakana characters
+                # Filters out punctuation and Latin OCR noise
+                return [tok for tok in tokens if tok and re.search(r'[\u3040-\u9fff]', tok)]
+            except ImportError:
+                raise ImportError("janome (Japanese NLP segmenter)")
+        else:
+            return []
+            
+    # Arabic: right-to-left, complex ligature system — Latin regex produces garbage.
+    if profile["script"] == "arabic":
         return []
 
     text = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", text, flags=re.UNICODE)
