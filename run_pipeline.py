@@ -9,7 +9,7 @@ from collections import Counter
 from multiprocessing import Pool
 
 from src.engine_io import htid_to_zip_path, htid_to_tsv_path, get_zip_size_mb, stream_volume_from_zip
-from src.engine_nlp import resolve_language, get_profile, tokenize_page, generate_ngrams_with_counts
+from src.engine_nlp import resolve_language, get_profile, tokenize_page, generate_ngrams_with_counts, LowConfidenceLanguageError
 from src.engine_filters import filter1_top25, filter2_min_frequency, filter3_pmi, filter4_exposure_cap
 from src.metrics import estimate_json_size, singleton_rate
 
@@ -61,7 +61,7 @@ def write_pending(htid: str, reason: str, pending_path: Path):
     finally:
         os.unlink(str(lock_path))
 
-def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 2, min_pmi: float = 0.0, max_exposure: float = 0.15, flat_output: bool = False):
+def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 2, min_pmi: float = 0.0, max_exposure: float = 0.15, flat_output: bool = False, ef_root: Path = None):
     print(f"\nAnalyzing: {htid}")
     
     if flat_output:
@@ -85,8 +85,9 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
         return f"OVERSIZED_{zip_size_mb:.1f}MB"
 
     # --- LANGUAGE DETECTION ---
-    sample_pages = list(itertools.islice(stream_volume_from_zip(zip_path), 31))
-    lang = resolve_language(htid, sample_pages)
+    # Fetch 61 pages so resolve_language() can sample interior pages 40-60
+    sample_pages = list(itertools.islice(stream_volume_from_zip(zip_path), 61))
+    lang = resolve_language(htid, sample_pages, ef_root=ef_root)
     profile = get_profile(lang)
 
     # --- STREAMING PROCESSING PASS ---
@@ -167,7 +168,7 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
 
 def process_one(args_tuple):
     """Module-level wrapper to avoid multiprocessing PicklingError on local functions."""
-    htid, pairtree_root, export_dir, min_freq, min_pmi, max_exposure, flat_output = args_tuple
+    htid, pairtree_root, ef_root, export_dir, min_freq, min_pmi, max_exposure, flat_output = args_tuple
     zip_path = htid_to_zip_path(htid, pairtree_root)
     pending_path = Path("/N/project/htrc/HTRC-Ngrams/pending_volumes.txt")
     
@@ -181,7 +182,8 @@ def process_one(args_tuple):
                                 min_freq=min_freq, 
                                 min_pmi=min_pmi, 
                                 max_exposure=max_exposure,
-                                flat_output=flat_output)
+                                flat_output=flat_output,
+                                ef_root=ef_root)
         if result is None:
             # Checkpointing skip returns None, do not log as pending
             return None
@@ -192,6 +194,10 @@ def process_one(args_tuple):
         else:
             result['htid'] = htid
             return result
+    except LowConfidenceLanguageError as e:
+        print(f"  🔍 SKIPPED {htid}: {e}")
+        write_pending(htid, "LOW_LANGUAGE_CONFIDENCE", pending_path)
+        return None
     except ImportError as e:
         print(f"  ⚠️ Skipping {htid} due to missing dependency: {e}")
         write_pending(htid, f"MISSING_DEPENDENCY_{e}", pending_path)
@@ -225,6 +231,8 @@ def main():
     print(f"Target Pairtree root: {pairtree_root}")
     print(f"Target ID list: {htids_file}")
 
+    ef_root = Path("/N/project/htrc/extracted-features/data/bibframe-jsonld")
+
     # Hardcoded permanent storage path (Blocker 9 fix)
     if args.flat_output:
         export_dir = Path("/N/project/htrc/HTRC-Ngrams/exported_bigrams_flat")
@@ -255,7 +263,7 @@ def main():
     print(f"[Task {task_id}/{total_tasks}] Processing {len(my_htids)} volumes using {n_workers} workers.")
 
     # Build argument tuples for each volume to pass to pool.map
-    task_args = [(htid, pairtree_root, export_dir, args.min_freq, args.min_pmi, args.max_exposure, args.flat_output) for htid in my_htids]
+    task_args = [(htid, pairtree_root, ef_root, export_dir, args.min_freq, args.min_pmi, args.max_exposure, args.flat_output) for htid in my_htids]
 
     # Process this task's volumes using all available CPUs
     with Pool(processes=n_workers) as pool:

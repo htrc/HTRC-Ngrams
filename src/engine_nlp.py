@@ -2,26 +2,75 @@ import re
 from collections import Counter
 from .config import LANGUAGE_PROFILES
 
-def resolve_language(htid: str, pages: list):
+class LowConfidenceLanguageError(RuntimeError):
+    """
+    Raised when langid's confidence score is too low to trust.
+    Volume is skipped and logged to pending_volumes.txt for retry
+    once EF metadata covers it (Blocker 7 Stage 1 fix).
+    """
+
+def get_lang_from_jsonld(jsonld_path) -> str:
+    """
+    Extract language code from a HathiTrust JSON-LD Bibframe file.
+    Files are bz2-compressed. Uses regex to find the language code
+    regardless of how deeply nested the RDF graph structure is.
+    Returns None if field not found.
+    """
+    try:
+        import bz2, re
+        with bz2.open(jsonld_path, 'rt', encoding='utf-8') as f:
+            content = f.read()
+            
+        # 1. Standard: "language" : "eng"
+        m1 = re.search(r'"language"\s*:\s*"([a-z]{3})"', content)
+        if m1: return m1.group(1)
+            
+        # 2. Array (single or multiple): "language" : [ "eng", "gle" ]
+        # By removing the strict closing bracket `\]`, we just grab the very first language code in the array.
+        m2 = re.search(r'"language"\s*:\s*\[\s*"([a-z]{3})"', content)
+        if m2: return m2.group(1)
+        
+        # 3. RDF Value: "language": [{"@value": "eng"}]
+        m3 = re.search(r'"language"\s*:\s*\[\s*\{\s*"@value"\s*:\s*"([a-z]{3})"', content)
+        if m3: return m3.group(1)
+
+        # 4. RDF Node: "language": "http://id.loc.gov/vocabulary/languages/eng"
+        m4 = re.search(r'"language"\s*:\s*".*?/languages/([a-z]{3})"', content)
+        if m4: return m4.group(1)
+            
+    except Exception as e:
+        return f"ERROR: {e}"
+    return None
+
+def resolve_language(htid: str, pages: list, ef_root=None):
     """
     Determine the optimal language profile for the volume.
     First checks metadata, then falls back to langid sampling.
     Returns 'default_latin' if detection fails.
     """
-    print(f"  [Language Resolver] Initializing Language Resolution for '{htid}'...")
+    print(f"  [Language Resolver] Initializing for '{htid}'...")
     
-    # --- STAGE 1: METADATA CHECK ---
-    # TODO: Load active cluster JSON/CSV metadata here using htid matching
-    metadata_lang = None
-    if metadata_lang:
-        print(f"  [Language Resolver] ⚡ STAGE 1 SUCCESS: Mapped cluster metadata code '{metadata_lang}'")
-        return metadata_lang
-        
-    print(f"  [Language Resolver] ❌ STAGE 1 MISS: No metadata array matched. Transitioning to STAGE 2 Detector...")
+    # --- STAGE 1: JSON-LD METADATA (EF Dataset) ---
+    if ef_root is not None:
+        from .engine_io import find_jsonld_path
+        jsonld_path = find_jsonld_path(htid, ef_root)
+        if jsonld_path:
+            print(f"  [Language Resolver] 🔎 STAGE 1: Found file at {jsonld_path}, attempting to extract language...")
+            metadata_lang = get_lang_from_jsonld(jsonld_path)
+            if metadata_lang and not metadata_lang.startswith("ERROR:"):
+                print(f"  [Language Resolver] ⚡ STAGE 1 SUCCESS: JSON-LD metadata → '{metadata_lang}'")
+                return metadata_lang
+            else:
+                err_msg = metadata_lang if metadata_lang else "'language' key missing"
+                print(f"  [Language Resolver] ❌ STAGE 1 MISS: File found, but {err_msg}.")
+        else:
+            print(f"  [Language Resolver] ❌ STAGE 1 MISS: No physical JSON-LD file found for {htid}.")
+        print(f"  [Language Resolver] Moving to Stage 2...")
 
     # --- FALLBACK: langid DETECTION ---
-    # Sample 10 pages from the interior of the text to avoid frontmatter
-    sample_text = " ".join(pages[20:30]).lower() if len(pages) > 30 else " ".join(pages).lower()
+    # Sample pages 40-60 to skip title pages, prefaces, and multi-language frontmatter.
+    # For short books (< 60 pages), use the middle third as the safest approximation.
+    sample_text = " ".join(pages[40:60]).lower() if len(pages) > 60 else " ".join(pages[len(pages)//3:]).lower()
     
     try:
         import langid
@@ -30,6 +79,20 @@ def resolve_language(htid: str, pages: list):
         # Prevents misclassification into micro-dialects (e.g. German -> Luxembourgish).
         langid.set_languages(['en', 'fr', 'es', 'de', 'it', 'pt', 'ru', 'zh', 'ja', 'ar'])
         iso_code, confidence = langid.classify(sample_text)
+
+        # Confidence is a log-probability sum, which grows negatively with text length.
+        # We must normalize it by the length of the sample text to get a per-character score.
+        text_len = max(len(sample_text), 1)
+        normalized_confidence = confidence / text_len
+
+        # A typical normalized score for a valid language is between -5.0 and -15.0.
+        # Anything below -25.0 per character is highly likely to be OCR noise or gibberish.
+        CONFIDENCE_THRESHOLD_PER_CHAR = -25.0
+        if normalized_confidence < CONFIDENCE_THRESHOLD_PER_CHAR:
+            raise LowConfidenceLanguageError(
+                f"langid confidence too low ({normalized_confidence:.1f} per char) to safely determine language. "
+                f"Best guess was '{iso_code}' (Raw Score: {confidence:.1f}) but cannot be trusted."
+            )
 
         # Map ISO 639-1 (2-letter) codes to HathiTrust MARC (3-letter) codes
         marc_map = {

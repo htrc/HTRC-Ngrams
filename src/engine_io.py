@@ -72,3 +72,34 @@ def read_volume_from_zip(zip_path: Path):
             except Exception:
                 pass
     return pages
+
+def find_jsonld_path(htid: str, ef_root: Path):
+    """
+    Locate the JSON-LD Bibframe file for a given HTID.
+    Uses os.scandir instead of glob to safely handle
+    unusual folder names (dollar signs, etc.) in the EF dataset.
+    Returns Path if found, None if not found.
+    """
+    import os
+
+    encoded_htid = htid.replace(':', '+').replace('/', '=')
+    lib = htid.split('.')[0] if '.' in htid else htid.split(':')[0]
+    filename = f"{encoded_htid}.json.bz2"
+
+    lib_dir = ef_root / lib
+    if not lib_dir.exists():
+        return None
+
+    # Scan each batch subfolder looking for our file
+    try:
+        with os.scandir(lib_dir) as batches:
+            for batch in batches:
+                if not batch.is_dir():
+                    continue
+                candidate = Path(batch.path) / filename
+                if candidate.exists():
+                    return candidate
+    except PermissionError:
+        pass
+
+    return None
