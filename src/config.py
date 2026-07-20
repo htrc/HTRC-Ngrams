@@ -8,12 +8,12 @@ LANGUAGE_PROFILES = {
 
     "eng": {
         "header_keywords": ["CHAPTER", "BOOK", "VOL", "VOLUME", "PAGE", "PART", "SECTION"],
-        "allowed_single_chars": ["a", "i", "o"],  # 'o' for poetic usage
+        "allowed_single_chars": ["a", "i"],
         "script": "latin"
     },
     "fra": {
         "header_keywords": ["CHAPITRE", "LIVRE", "VOLUME", "PAGE", "TOME", "PARTIE"],
-        "allowed_single_chars": ["a", "y", "o", "à", "ô"],
+        "allowed_single_chars": ["a", "y", "o", "à", "ô", "l", "c", "d", "j", "m", "n", "s"],
         "script": "latin"
     },
     "spa": {
@@ -22,7 +22,7 @@ LANGUAGE_PROFILES = {
         "script": "latin"
     },
     "deu": {
-        "header_keywords": ["KAPITEL", "BAND", "SEITE", "TEIL"],
+        "header_keywords": ["KAPITEL", "BAND", "SEITE", "TEIL", "BUCH", "ABSCHNITT", "INHALT", "VORWORT", "ANHANG", "REGISTER"],
         "allowed_single_chars": [],
         "script": "latin"
     },
@@ -34,6 +34,26 @@ LANGUAGE_PROFILES = {
     "por": {
         "header_keywords": ["CAPITULO", "LIVRO", "VOLUME", "PAGINA", "PARTE", "SECCAO"],
         "allowed_single_chars": ["a", "e", "o"],  # Portuguese: 'a' (the/her), 'e' (and), 'o' (the/him)
+        "script": "latin"
+    },
+    "lat": {
+        "header_keywords": ["CAPUT", "LIBER", "TOMUS", "PARS", "PAGINA", "VOLUMEN", "SECTIO"],
+        "allowed_single_chars": ["a", "e", "i", "o", "u", "v", "x", "l", "c", "d", "m"],
+        "script": "latin"
+    },
+    "dut": {
+        "header_keywords": ["HOOFDSTUK", "BOEK", "DEEL", "PAGINA", "BLADZIJDE", "STUK", "AFDELING", "BAND"],
+        "allowed_single_chars": ["a", "u", "o", "s", "t", "k", "m", "n", "d"],
+        "script": "latin"
+    },
+    "pol": {
+        "header_keywords": ["ROZDZIAŁ", "KSIĘGA", "TOM", "STRONA", "CZĘŚĆ", "DZIAŁ", "USTĘP"],
+        "allowed_single_chars": ["a", "i", "o", "u", "w", "z"],
+        "script": "latin"
+    },
+    "swe": {
+        "header_keywords": ["KAPITEL", "BOK", "DEL", "SIDA", "BAND", "AVDELNING", "STYCKE"],
+        "allowed_single_chars": ["i", "å", "ö", "o", "e", "a"],
         "script": "latin"
     },
 
@@ -66,6 +86,56 @@ LANGUAGE_PROFILES = {
         "header_keywords": [],
         "allowed_single_chars": [],
         "script": "arabic"
+    },
+
+    # --- Hebrew Script Languages ---
+
+    "heb": {
+        "header_keywords": ["פרק", "ספר", "חלק", "עמוד", "כרך", "שער", "סימן"],
+        "allowed_single_chars": ["ב", "כ", "ל", "מ", "ה", "ו", "ש"],
+        "script": "hebrew"
+    },
+
+    # --- New 5 Languages (Korean, Czech, Danish, Indonesian, Hungarian) ---
+
+    "kor": {
+        "header_keywords": ["목차", "차례", "서문", "머리말", "부록", "색인", "참고문헌", "目次", "序文", "附錄", "索引"],
+        "allowed_single_chars": [],
+        "script": "korean"
+    },
+    "cze": {
+        "header_keywords": [
+            "KAPITOLA", "KNIHA", "DÍL", "DIL", "STRANA",
+            "ČÁST", "CAST", "OBSAH", "PŘEDMLUVA", "PREDMLUVA",
+            "ÚVOD", "UVOD", "REJSTŘÍK", "REJSTRIK"
+        ],
+        "allowed_single_chars": ["a", "i", "o", "u", "v", "z", "k", "s", "ó"],
+        "script": "latin"
+    },
+    "dan": {
+        "header_keywords": [
+            "KAPITEL", "BOG", "BIND", "SIDE", "DEL",
+            "AFSNIT", "INDHOLD", "FORORD", "TILLÆG", "TILLAEG", "REGISTER"
+        ],
+        "allowed_single_chars": ["i", "a", "o", "å", "ø"],
+        "script": "latin"
+    },
+    "ind": {
+        "header_keywords": [
+            "BAB", "BUKU", "JILID", "HALAMAN", "BAGIAN",
+            "DAFTAR", "ISI", "PENDAHULUAN", "PENGANTAR", "LAMPIRAN"
+        ],
+        "allowed_single_chars": ["o"],
+        "script": "latin"
+    },
+    "hun": {
+        "header_keywords": [
+            "FEJEZET", "KÖNYV", "KONYV", "KÖTET", "KOTET",
+            "OLDAL", "RÉSZ", "RESZ", "TARTALOM",
+            "ELŐSZÓ", "ELOSZO", "FÜGGELÉK", "FUGGELEK", "MUTATÓ", "MUTATO"
+        ],
+        "allowed_single_chars": ["a", "s", "e", "ő", "ó"],
+        "script": "latin"
     },
 
     # --- Fallbacks ---

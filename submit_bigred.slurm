@@ -9,8 +9,9 @@
 #SBATCH --time=04:00:00
 #SBATCH --partition=general
 #SBATCH --mail-type=END,FAIL
-#SBATCH --output=/N/project/htrc/HTRC-Ngrams/logs/ngrams_%A_%a.out
-#SBATCH --error=/N/project/htrc/HTRC-Ngrams/logs/ngrams_%A_%a.err
+#SBATCH --output=logs/ngrams_%A_%a.out
+#SBATCH --error=logs/ngrams_%A_%a.err
+
 
 # ---------------------------------------------------------------------------
 # BigRed200 HTRC N-grams Execution Script
@@ -21,9 +22,11 @@ echo "Job Start Time: $(date)"
 echo "Running on node: $SLURMD_NODENAME"
 echo "=========================================================="
 
-# 1. Load required Python module on BigRed200
-# Note: You may need to replace this with the exact python module string (e.g. module load python/3.10.x)
+# 1. Load required Python module and environment on BigRed200
 module load python
+source /N/project/htrc/venvs/htrc-ngram-stanza/bin/activate
+export STANZA_RESOURCES_DIR=/N/project/htrc/stanza_resources
+export NLTK_DATA=/N/project/htrc/nltk_data
 
 # 2. Enter working directory
 cd $SLURM_SUBMIT_DIR

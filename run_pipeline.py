@@ -10,7 +10,7 @@ from multiprocessing import Pool
 
 from src.engine_io import htid_to_zip_path, htid_to_tsv_path, get_zip_size_mb, stream_volume_from_zip
 from src.engine_nlp import resolve_language, get_profile, tokenize_page, generate_ngrams_with_counts, LowConfidenceLanguageError
-from src.engine_filters import filter1_top25, filter2_min_frequency, filter3_pmi, filter4_exposure_cap
+from src.engine_filters import select_top_standard_stopwords, filter_1_standard_stopword_bigrams, filter2_min_frequency, filter3_pmi, filter4_exposure_cap
 from src.metrics import estimate_json_size, singleton_rate
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ def write_pending(htid: str, reason: str, pending_path: Path):
 
 def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 2, min_pmi: float = 0.0, max_exposure: float = 0.15, flat_output: bool = False, ef_root: Path = None):
     print(f"\nAnalyzing: {htid}")
-    
+
     if flat_output:
         safe_name = htid.replace('/', '=').replace(':', '+')
         tsv_path = output_dir / f"{safe_name}.tsv"
@@ -71,12 +71,12 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
         # Pairtree-mirrored structure (Blocker 6 fix)
         tsv_path = htid_to_tsv_path(htid, output_dir)
     volume_name = tsv_path.stem
-    
+
     # Checkpointing: skip if this volume was already processed in a previous run
     if tsv_path.exists():
         print(f"  ⏭️  SKIP (already done): {volume_name}")
         return None
-        
+
     # Size guard: log and skip volumes whose ZIP exceeds safe memory threshold.
     MAX_ZIP_SIZE_MB = 150
     zip_size_mb = get_zip_size_mb(zip_path)
@@ -101,7 +101,7 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
         words = tokenize_page(page, profile, lang)
         if not words:
             continue
-        total_tokens        += len(words)
+        total_tokens += len(words)
         unigram_counts.update(words)
         bigram_counts.update(generate_ngrams_with_counts(words, 2))
 
@@ -111,42 +111,94 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
 
     print(f"  Total pages:  {page_count:,}")
     print(f"  Total tokens: {total_tokens:,}")
-    
+
     original_total_bigrams = sum(bigram_counts.values())
 
     # --- APPLY FILTER 1 ---
     original_bigram_count = len(bigram_counts)
-    bigram_counts, top25_words = filter1_top25(bigram_counts, unigram_counts)
-    print(f"  Filter 1 (Top 25 Stopwords): Dropped {original_bigram_count - len(bigram_counts):,} useless bigrams.")
-    
-    # --- APPLY FILTER 2 (DISABLED PER USER REQUEST) ---
+    selected_stopwords, top25_with_counts = select_top_standard_stopwords(unigram_counts, lang, top_n=25)
+    bigram_counts, dropped_f1 = filter_1_standard_stopword_bigrams(bigram_counts, selected_stopwords)
+    print(f"  Filter 1 (Standard Stopwords): Dropped {original_bigram_count - len(bigram_counts):,} useless bigrams.")
+
+    # --- EXPORT AUDIT LOGS FOR FILTER 1 ---
+    audit_base = Path("/N/project/htrc/HTRC-Ngrams/stopwords")
+    top25_dir = audit_base / "top25_stopwords"
+    dropped_dir = audit_base / "top25_dropped_bigrams"
+    top25_dir.mkdir(parents=True, exist_ok=True)
+    dropped_dir.mkdir(parents=True, exist_ok=True)
+
+    clean_htid = htid.replace('/', '_').replace(':', '_')
+
+    with open(top25_dir / f"{clean_htid}_top25.txt", 'w', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter='\t')
+        writer.writerow(["word", "freq"])
+        for word, count in top25_with_counts.items():
+            writer.writerow([word, count])
+
+    with open(dropped_dir / f"{clean_htid}_dropped.tsv", 'w', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter='\t')
+        writer.writerow(["w1", "w2", "freq"])
+        for bigram, count in dropped_f1.most_common():
+            w1, w2 = bigram
+            writer.writerow([w1, w2, count])
+
+
+    # --- APPLY FILTER 2 ---
     # bigram_counts, rem_dist, rem_occ = filter2_min_frequency(bigram_counts, min_freq=min_freq)
     # print(f"  Filter 2 (Min Freq >= {min_freq}): Dropped {rem_dist:,} distinct bigrams; retained {len(bigram_counts):,} distinct bigrams; removed {rem_occ:,} total occurrences.")
-    
-    # --- APPLY FILTER 3 ---
+
+    # # --- APPLY FILTER 3 ---
     f2_survivor_count = len(bigram_counts)
     scored_results, pmi_dropped = filter3_pmi(bigram_counts, unigram_counts, original_total_bigrams, total_tokens, min_pmi=min_pmi)
     print(f"  Filter 3 (PMI Polish >= {min_pmi}): Evaluated {f2_survivor_count:,} bigrams; dropped {pmi_dropped:,} low-scoring artifacts; retained {len(scored_results):,} bigrams.")
+
+    # # --- APPLY FILTER 4 (DISABLED) ---
+    # final_results, exposure_dropped = filter4_exposure_cap(scored_results, total_tokens, max_exposure=max_exposure)
     
-    # --- APPLY FILTER 4 (DISABLED PER USER REQUEST) ---
-    final_results = scored_results
+    has_pmi = 'scored_results' in locals()
+    if has_pmi:
+        final_results = scored_results
+    else:
+        final_results = bigram_counts.most_common()
 
     # Export securely formatted filename
     tsv_path.parent.mkdir(parents=True, exist_ok=True)
     with open(tsv_path, 'w', encoding='utf-8') as f:
-        f.write("w1\tw2\tfreq\tpmi\n")
-        for bigram, b_count, pmi in final_results:
-            w1, w2 = bigram.split(' ', 1)
-            f.write(f"{w1}\t{w2}\t{b_count}\t{pmi}\n")
+        writer = csv.writer(f, delimiter='\t')
+        if has_pmi:
+            writer.writerow(["w1", "w2", "freq", "pmi"])
+            for bigram, b_count, pmi in final_results:
+                w1, w2 = bigram
+                writer.writerow([w1, w2, b_count, pmi])
+        else:
+            writer.writerow(["w1", "w2", "freq"])
+            for bigram, b_count in final_results:
+                w1, w2 = bigram
+                writer.writerow([w1, w2, b_count])
     print(f"  Exported TSV: {tsv_path.name} ({len(final_results):,} records)")
 
     unigram_mb  = estimate_json_size(unigram_counts)
-    bigram_mb   = estimate_json_size(bigram_counts)
+    
+    if has_pmi:
+        final_bigram_counts = Counter(
+            {bigram: count for bigram, count, _ in final_results}
+        )
+    else:
+        final_bigram_counts = Counter(
+            {bigram: count for bigram, count in final_results}
+        )
+        
+    bigram_mb   = estimate_json_size(final_bigram_counts)
 
     bigram_growth   = bigram_mb   / unigram_mb if unigram_mb > 0 else 0
-    bigram_singleton_pct   = singleton_rate(bigram_counts)
+    bigram_singleton_pct   = singleton_rate(final_bigram_counts)
 
     print(f"  Bigrams:  {bigram_mb:.2f} MB ({bigram_growth:.2f}x, {bigram_singleton_pct:.1f}% singletons)")
+
+    if has_pmi:
+        total_bigrams = sum(b_count for _, b_count, _ in final_results)
+    else:
+        total_bigrams = sum(b_count for _, b_count in final_results)
 
     return {
         'volume_name':          volume_name,
@@ -155,14 +207,14 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
         'total_tokens':         total_tokens,
         'unique_unigrams':      len(unigram_counts),
         'unique_bigrams':       len(final_results),
+        'total_bigrams':        total_bigrams,
         'unigram_mb':           round(unigram_mb,  3),
         'bigram_mb':            round(bigram_mb,   3),
         'bigram_growth':        round(bigram_growth,   2),
         'bigram_singleton_pct': round(bigram_singleton_pct, 1),
     }
 
-
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------
 # Main (HPC Entrypoint)
 # ---------------------------------------------------------------------------
 
@@ -171,16 +223,16 @@ def process_one(args_tuple):
     htid, pairtree_root, ef_root, export_dir, min_freq, min_pmi, max_exposure, flat_output = args_tuple
     zip_path = htid_to_zip_path(htid, pairtree_root)
     pending_path = Path("/N/project/htrc/HTRC-Ngrams/pending_volumes.txt")
-    
+
     if not zip_path.exists():
         print(f"  ❌ ZIP not found: {htid}")
         write_pending(htid, "ZIP_NOT_FOUND", pending_path)
         return None
-        
+
     try:
-        result = analyze_volume(htid, zip_path, export_dir, 
-                                min_freq=min_freq, 
-                                min_pmi=min_pmi, 
+        result = analyze_volume(htid, zip_path, export_dir,
+                                min_freq=min_freq,
+                                min_pmi=min_pmi,
                                 max_exposure=max_exposure,
                                 flat_output=flat_output,
                                 ef_root=ef_root)
@@ -243,7 +295,7 @@ def main():
 
     with open(htids_file, 'r', encoding='utf-8') as f:
         htids = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-        
+
     if len(htids) == 0:
         print(f"❌ The ID list file is empty!")
         return

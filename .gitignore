@@ -33,3 +33,16 @@ htids.txt
 merge_logs.sh 
 # Usage: bash merge_logs.sh <SLURM_JOB_ID>
 # Example: bash merge_logs.sh 123456
+
+# Local testing and scratch files
+test_local.py
+test_outputs/
+test_samples/
+scratch/
+
+compile_top25_excel.sh
+
+
+# local workspace settings
+.idea/ 
+

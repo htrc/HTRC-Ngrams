@@ -15,5 +15,6 @@ else
 fi
 
 echo "📦 Submitting $N volume(s) across $((ARRAY_MAX+1)) task(s)..."
+mkdir -p logs
 sbatch --array=0-$ARRAY_MAX submit_bigred.slurm
 echo "✅ Monitor with: squeue -u $USER"
