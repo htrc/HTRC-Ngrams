@@ -10,8 +10,14 @@ from multiprocessing import Pool
 
 from src.engine_io import htid_to_zip_path, htid_to_tsv_path, get_zip_size_mb, stream_volume_from_zip
 from src.engine_nlp import resolve_language, get_profile, tokenize_page, generate_ngrams_with_counts, LowConfidenceLanguageError
-from src.engine_filters import select_top_standard_stopwords, filter_1_standard_stopword_bigrams, filter2_min_frequency, filter3_pmi, filter4_exposure_cap
+from src.engine_filters import select_top_standard_stopwords, filter_1_standard_stopword_bigrams, filter2_min_frequency, filter3_pmi, filter4_exposure_cap, UnsupportedLanguageError, get_stopword_metadata
 from src.metrics import estimate_json_size, singleton_rate
+from src.provenance import generate_run_provenance, write_run_provenance_once
+
+# Explicit Filter Configuration Switches
+ENABLE_FILTER_1 = True
+ENABLE_FILTER_2 = False
+ENABLE_FILTER_3 = True
 
 # ---------------------------------------------------------------------------
 # Volume analysis
@@ -115,50 +121,60 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
     original_total_bigrams = sum(bigram_counts.values())
 
     # --- APPLY FILTER 1 ---
-    original_bigram_count = len(bigram_counts)
-    selected_stopwords, top25_with_counts = select_top_standard_stopwords(unigram_counts, lang, top_n=25)
-    bigram_counts, dropped_f1 = filter_1_standard_stopword_bigrams(bigram_counts, selected_stopwords)
-    print(f"  Filter 1 (Standard Stopwords): Dropped {original_bigram_count - len(bigram_counts):,} useless bigrams.")
-
-    # --- EXPORT AUDIT LOGS FOR FILTER 1 ---
+    stopword_meta = get_stopword_metadata(lang)
+    dropped_f1 = Counter()
+    selected_stopwords = set()
+    top25_with_counts = {}
+    
     audit_base = Path("/N/project/htrc/HTRC-Ngrams/stopwords")
     top25_dir = audit_base / "top25_stopwords"
     dropped_dir = audit_base / "top25_dropped_bigrams"
     top25_dir.mkdir(parents=True, exist_ok=True)
     dropped_dir.mkdir(parents=True, exist_ok=True)
-
     clean_htid = htid.replace('/', '_').replace(':', '_')
+    top25_file_path = str(top25_dir / f"{clean_htid}_top25.txt")
+    dropped_file_path = str(dropped_dir / f"{clean_htid}_dropped.tsv")
 
-    with open(top25_dir / f"{clean_htid}_top25.txt", 'w', encoding='utf-8') as f:
-        writer = csv.writer(f, delimiter='\t')
-        writer.writerow(["word", "freq"])
-        for word, count in top25_with_counts.items():
-            writer.writerow([word, count])
+    if ENABLE_FILTER_1:
+        original_bigram_count = len(bigram_counts)
+        selected_stopwords, top25_with_counts = select_top_standard_stopwords(unigram_counts, lang, top_n=25)
+        bigram_counts, dropped_f1 = filter_1_standard_stopword_bigrams(bigram_counts, selected_stopwords)
+        print(f"  Filter 1 (Standard Stopwords): Dropped {original_bigram_count - len(bigram_counts):,} useless bigrams.")
 
-    with open(dropped_dir / f"{clean_htid}_dropped.tsv", 'w', encoding='utf-8') as f:
-        writer = csv.writer(f, delimiter='\t')
-        writer.writerow(["w1", "w2", "freq"])
-        for bigram, count in dropped_f1.most_common():
-            w1, w2 = bigram
-            writer.writerow([w1, w2, count])
+        # --- EXPORT AUDIT LOGS FOR FILTER 1 ---
+        with open(top25_dir / f"{clean_htid}_top25.txt", 'w', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter='\t')
+            writer.writerow(["word", "freq"])
+            for word, count in top25_with_counts.items():
+                writer.writerow([word, count])
+
+        with open(dropped_dir / f"{clean_htid}_dropped.tsv", 'w', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter='\t')
+            writer.writerow(["w1", "w2", "freq"])
+            for bigram, count in dropped_f1.most_common():
+                w1, w2 = bigram
+                writer.writerow([w1, w2, count])
+    else:
+        print("  Filter 1: SKIPPED (disabled via switch)")
 
 
     # --- APPLY FILTER 2 ---
-    # bigram_counts, rem_dist, rem_occ = filter2_min_frequency(bigram_counts, min_freq=min_freq)
-    # print(f"  Filter 2 (Min Freq >= {min_freq}): Dropped {rem_dist:,} distinct bigrams; retained {len(bigram_counts):,} distinct bigrams; removed {rem_occ:,} total occurrences.")
+    if ENABLE_FILTER_2:
+        bigram_counts, rem_dist, rem_occ = filter2_min_frequency(bigram_counts, min_freq=min_freq)
+        print(f"  Filter 2 (Min Freq >= {min_freq}): Dropped {rem_dist:,} distinct bigrams; retained {len(bigram_counts):,} distinct bigrams.")
+    else:
+        print("  Filter 2: SKIPPED (disabled via switch)")
 
-    # # --- APPLY FILTER 3 ---
-    f2_survivor_count = len(bigram_counts)
-    scored_results, pmi_dropped = filter3_pmi(bigram_counts, unigram_counts, original_total_bigrams, total_tokens, min_pmi=min_pmi)
-    print(f"  Filter 3 (PMI Polish >= {min_pmi}): Evaluated {f2_survivor_count:,} bigrams; dropped {pmi_dropped:,} low-scoring artifacts; retained {len(scored_results):,} bigrams.")
-
-    # # --- APPLY FILTER 4 (DISABLED) ---
-    # final_results, exposure_dropped = filter4_exposure_cap(scored_results, total_tokens, max_exposure=max_exposure)
-    
-    has_pmi = 'scored_results' in locals()
-    if has_pmi:
+    # --- APPLY FILTER 3 ---
+    if ENABLE_FILTER_3:
+        f2_survivor_count = len(bigram_counts)
+        scored_results, pmi_dropped = filter3_pmi(bigram_counts, unigram_counts, original_total_bigrams, total_tokens, min_pmi=min_pmi)
+        print(f"  Filter 3 (PMI Polish >= {min_pmi}): Evaluated {f2_survivor_count:,} bigrams; dropped {pmi_dropped:,} low-scoring artifacts; retained {len(scored_results):,} bigrams.")
+        has_pmi = True
         final_results = scored_results
     else:
+        print("  Filter 3: SKIPPED (disabled via switch)")
+        has_pmi = False
         final_results = bigram_counts.most_common()
 
     # Export securely formatted filename
@@ -203,6 +219,16 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, min_freq: int = 
     return {
         'volume_name':          volume_name,
         'zip_path':             str(zip_path),
+        'language':             lang,
+        'stopword_source':      stopword_meta['source'],
+        'stopword_list_code':   stopword_meta['list_code'],
+        'selected_stopword_count': len(selected_stopwords),
+        'filter_1_enabled':     ENABLE_FILTER_1,
+        'filter_2_enabled':     ENABLE_FILTER_2,
+        'filter_3_enabled':     ENABLE_FILTER_3,
+        'output_file':          str(tsv_path),
+        'top25_stopword_file':  top25_file_path if ENABLE_FILTER_1 else "",
+        'dropped_bigram_file':  dropped_file_path if ENABLE_FILTER_1 else "",
         'total_pages':          page_count,
         'total_tokens':         total_tokens,
         'unique_unigrams':      len(unigram_counts),
@@ -249,6 +275,10 @@ def process_one(args_tuple):
     except LowConfidenceLanguageError as e:
         print(f"  🔍 SKIPPED {htid}: {e}")
         write_pending(htid, "LOW_LANGUAGE_CONFIDENCE", pending_path)
+        return None
+    except UnsupportedLanguageError as e:
+        print(f"  ⚠️ SKIPPED {htid}: Unsupported Stopword Language ({e})")
+        write_pending(htid, f"UNSUPPORTED_LANGUAGE_{e}", pending_path)
         return None
     except ImportError as e:
         print(f"  ⚠️ Skipping {htid} due to missing dependency: {e}")
@@ -314,6 +344,24 @@ def main():
     my_htids = htids[task_id::total_tasks]
     print(f"[Task {task_id}/{total_tasks}] Processing {len(my_htids)} volumes using {n_workers} workers.")
 
+    # Generate Run Provenance Manifest BEFORE worker execution so failed runs are captured
+    slurm_array_id = os.environ.get("SLURM_ARRAY_JOB_ID")
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    if slurm_array_id:
+        run_id = f"slurm_{slurm_array_id}"
+    elif slurm_job_id:
+        run_id = f"slurm_{slurm_job_id}"
+    else:
+        run_id = f"local_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    stanza_res_dir = Path(os.environ.get("STANZA_RESOURCES_DIR", Path.home() / "stanza_resources"))
+    prov_data = generate_run_provenance(
+        run_id, ENABLE_FILTER_1, ENABLE_FILTER_2, ENABLE_FILTER_3,
+        args.min_freq, args.min_pmi, stanza_res_dir
+    )
+    prov_dir = Path("/N/project/htrc/HTRC-Ngrams/provenance")
+    write_run_provenance_once(prov_data, prov_dir)
+
     # Build argument tuples for each volume to pass to pool.map
     task_args = [(htid, pairtree_root, ef_root, export_dir, args.min_freq, args.min_pmi, args.max_exposure, args.flat_output) for htid in my_htids]
 
@@ -327,9 +375,13 @@ def main():
         print("\n❌ No volumes successfully analyzed by this task. Exiting.")
         return
 
-    # All tasks append their rows to one unified file securely using a lockfile
-    csv_path = Path("/N/project/htrc/HTRC-Ngrams/bigred_results.csv")
+    # Per-run volume results CSV
+    results_dir = Path("/N/project/htrc/HTRC-Ngrams/results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = results_dir / f"{run_id}.csv"
+
     for result in all_results:
+        result['run_id'] = run_id
         safe_append_result(result, csv_path)
 
     print("\n" + "=" * 70)

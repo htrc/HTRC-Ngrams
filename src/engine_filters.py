@@ -1,28 +1,101 @@
 import math
 from collections import Counter
 
+import stopwordsiso
 from nltk.corpus import stopwords
 
-NLTK_STOPWORD_LANG_MAP = {
-    "eng": "english",
-    "fra": "french",
-    "spa": "spanish",
-    "deu": "german",
-    "ita": "italian",
-    "por": "portuguese",
-    "rus": "russian",
-    "dut": "dutch",
-    "swe": "swedish",
-    "dan": "danish",
+class UnsupportedLanguageError(Exception):
+    pass
+
+
+
+STOPWORD_LANGUAGE_ALIASES = {
+    "ger": "deu",
+    "fre": "fra",
+    "chi": "zho",
+    "ces": "cze",
 }
 
-def get_standard_stopwords(lang: str):
-    nltk_lang = NLTK_STOPWORD_LANG_MAP.get(lang)
-    if not nltk_lang:
-        # If NLTK does not support this language, return empty set to avoid false positive filtering
-        return set()
-    return {word.casefold() for word in stopwords.words(nltk_lang)}
 
+STOPWORD_PROFILES = {
+    # NLTK stopword lists
+    "eng": {"source": "nltk", "code": "english"},
+    "deu": {"source": "nltk", "code": "german"},
+    "fra": {"source": "nltk", "code": "french"},
+    "spa": {"source": "nltk", "code": "spanish"},
+    "zho": {"source": "nltk", "code": "chinese"},
+    "rus": {"source": "nltk", "code": "russian"},
+    "ita": {"source": "nltk", "code": "italian"},
+    "por": {"source": "nltk", "code": "portuguese"},
+    "ara": {"source": "nltk", "code": "arabic"},
+    "dut": {"source": "nltk", "code": "dutch"},
+    "swe": {"source": "nltk", "code": "swedish"},
+    "heb": {"source": "nltk", "code": "hebrew"},
+    "dan": {"source": "nltk", "code": "danish"},
+    "ind": {"source": "nltk", "code": "indonesian"},
+    "hun": {"source": "nltk", "code": "hungarian"},
+
+    # stopwords-iso fallback lists
+    "jpn": {"source": "stopwords-iso", "code": "ja"},
+    "lat": {"source": "stopwords-iso", "code": "la"},
+    "pol": {"source": "stopwords-iso", "code": "pl"},
+    "kor": {"source": "stopwords-iso", "code": "ko"},
+    "cze": {"source": "stopwords-iso", "code": "cs"},
+}
+
+
+def canonicalize_stopword_language(lang: str) -> str:
+    return STOPWORD_LANGUAGE_ALIASES.get(lang, lang)
+
+
+def get_stopword_profile(lang: str) -> dict:
+    canonical_lang = canonicalize_stopword_language(lang)
+
+    profile = STOPWORD_PROFILES.get(canonical_lang)
+    if profile is None:
+        raise UnsupportedLanguageError(lang)
+
+    return profile
+
+
+def get_stopword_metadata(lang: str) -> dict:
+    profile = get_stopword_profile(lang)
+    return {
+        "source": profile["source"],
+        "list_code": profile["code"],
+    }
+
+
+def get_standard_stopwords(lang: str) -> set[str]:
+    profile = get_stopword_profile(lang)
+    source = profile["source"]
+    language_code = profile["code"]
+
+    if source == "nltk":
+        try:
+            words = stopwords.words(language_code)
+        except LookupError as error:
+            raise LookupError(
+                "The NLTK stopwords corpus is not installed. "
+                "Run: python -m nltk.downloader stopwords"
+            ) from error
+    else:
+        words = stopwordsiso.stopwords(language_code)
+
+    if not words:
+        raise RuntimeError(
+            f"Stopword source '{source}' returned no words for '{lang}'."
+        )
+
+    return {
+        word.casefold()
+        for word in words
+        if word and word.strip()
+    }
+
+
+def get_stopword_source(lang: str) -> str:
+    return get_stopword_profile(lang)["source"]
 def select_top_standard_stopwords(unigram_counts, lang: str, top_n: int = 25):
     """Select the most frequent tokens that are in the standard stopword list."""
     standard_stopwords = get_standard_stopwords(lang)

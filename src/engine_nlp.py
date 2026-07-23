@@ -145,6 +145,8 @@ def get_lang_from_jsonld(jsonld_path) -> str:
 LANGUAGE_ALIASES = {
     "chi": "zho",
     "ces": "cze",
+    "ger": "deu",
+    "fre": "fra",
 }
 
 def resolve_language(htid: str, pages: list, ef_root=None):

@@ -1,109 +1,358 @@
-# HTRC N-grams Extraction Pipeline
+# HTRC N-grams Pipeline
 
-A highly optimized, non-consumptive N-gram extraction engine natively engineered for massive HathiTrust Research Center Pairtree volumes on high-performance computing clusters (e.g. BigRed200). 
+The HTRC N-grams Pipeline extracts volume-level bigram frequency data from
+HathiTrust plain-text Pairtree volumes. It is designed for research computing
+environments where large collections are processed with multiple workers or
+SLURM array jobs.
 
----
+The pipeline combines:
 
-## 🚀 Quick Start
+- volume-level language resolution;
+- multilingual tokenization with Stanford Stanza;
+- page-level text cleanup;
+- unigram and bigram counting;
+- four filtering operations;
+- per-volume stopword audit files;
+- run-level provenance metadata; and
+- checkpointed TSV export.
 
-### Installation
-Load the exact Python environment and install the required machine learning dependencies onto your cluster node:
-```bash
-module load python
-pip install -r requirements.txt
+This repository is under active research and data-quality review. Filtering can
+reduce disclosure risk and dataset size, but the software does not by itself
+guarantee that an export satisfies a particular legal, policy, or
+non-consumptive-data standard. Collections should be evaluated under the
+requirements of the institution releasing them.
+
+## Processing Overview
+
+For each HTID, the pipeline:
+
+1. Resolves the Pairtree ZIP path.
+2. Resolves one language for the volume from JSON-LD metadata when available.
+3. Uses `langid` as a constrained fallback across the 20 supported languages.
+4. Streams the volume one page at a time.
+5. Removes recognized scanner boilerplate pages.
+6. Examines likely header and footer lines at the beginning and end of a page.
+7. Recombines words split by a line-final hyphen.
+8. Removes selected zero-width, superscript, and subscript characters.
+9. Applies Hebrew-specific diacritic removal where applicable.
+10. Tokenizes the page with the configured Stanza tokenizer and, where
+    available, MWT processor.
+11. Counts case-sensitive unigrams and adjacent bigrams within that page.
+12. Applies the configured filters.
+13. Writes the volume TSV, stopword audit files, result metadata, and run
+    provenance.
+
+Pages are processed independently. Bigrams do not cross page boundaries.
+
+## Supported Languages
+
+The pipeline uses three-letter language-profile codes internally. Source
+metadata codes are normalized to these configured profiles when necessary.
+
+| Language | Profile code | Stanza code | Stopword source |
+| --- | --- | --- | --- |
+| English | `eng` | `en` | NLTK |
+| German | `deu` | `de` | NLTK |
+| French | `fra` | `fr` | NLTK |
+| Spanish | `spa` | `es` | NLTK |
+| Chinese | `zho` | `zh-hans` | NLTK |
+| Japanese | `jpn` | `ja` | stopwords-iso |
+| Russian | `rus` | `ru` | NLTK |
+| Italian | `ita` | `it` | NLTK |
+| Portuguese | `por` | `pt` | NLTK |
+| Arabic | `ara` | `ar` | NLTK |
+| Latin | `lat` | `la` | stopwords-iso |
+| Dutch | `dut` | `nl` | NLTK |
+| Polish | `pol` | `pl` | stopwords-iso |
+| Swedish | `swe` | `sv` | NLTK |
+| Hebrew | `heb` | `he` | NLTK |
+| Korean | `kor` | `ko` | stopwords-iso |
+| Czech | `cze` | `cs` | stopwords-iso |
+| Danish | `dan` | `da` | NLTK |
+| Indonesian | `ind` | `id` | NLTK |
+| Hungarian | `hun` | `hu` | NLTK |
+
+The aliases `ger`, `fre`, `chi`, and `ces` are normalized to the corresponding
+configured profiles.
+
+## Tokenization
+
+Stanza performs language-specific tokenization. The pipeline preserves:
+
+- capitalization;
+- numbers;
+- punctuation tokens; and
+- Stanza multi-word-token expansions.
+
+For example:
+
+```text
+The well-known library doesn't close.
 ```
 
-### Execution
-The entrypoint for the application is the central orchestrator `run_pipeline.py`. Execute the script by passing the physical path to the Pairtree store and your target HTID list.
+produces tokens similar to:
 
-#### Required Arguments
-* `--pairtree`: Absolute path to the physical HathiTrust Pairtree root.
-* `--id-list`: Absolute path to a plaintext mapping file of Volume HTIDs.
+```text
+The | well | - | known | library | does | n't | close | .
+```
 
-#### Filter Tuning (Optional)
-* `--min-freq`: Minimum volume-level frequency threshold for Filter 2 (default: `2`).
-* `--min-pmi`: Minimum PMI threshold for Filter 3 (default: `0.0`).
-* `--max-exposure`: Maximum token exposure ratio limit for Filter 4 (default: `0.15`).
+Inline hyphens are separated before Stanza tokenization. A physical line-break
+hyphen is treated differently:
 
-#### Example Command
+```text
+inter-
+national
+```
+
+is normalized to:
+
+```text
+international
+```
+
+Tokenizer behavior is model-specific. Known behavior discovered during
+validation is documented in [`limitations.md`](limitations.md).
+
+## Filtering
+
+The filtering layer defines four operations. Filter configuration is recorded
+with run provenance so that exported collections can be interpreted
+consistently.
+
+### Filter 1: Standard Stopword Bigrams
+
+For each volume, the pipeline:
+
+1. loads a public language-specific stopword list;
+2. intersects that list with the volume's case-folded unigram counts;
+3. selects up to the 25 most frequent matching stopwords; and
+4. removes a bigram only when both tokens belong to that selected set.
+
+Proper nouns and other high-frequency content words are not selected unless
+they appear in the public stopword source.
+
+### Filter 2: Minimum Frequency
+
+Removes a bigram type when its volume-level frequency is below `min_freq`.
+
+```text
+frequency >= min_freq
+```
+
+The command-line default is `2`.
+
+### Filter 3: Pointwise Mutual Information
+
+Calculates volume-level pointwise mutual information:
+
+```text
+PMI(w1, w2) = log2(P(w1, w2) / (P(w1) * P(w2)))
+```
+
+The calculation uses the original volume-level unigram counts, token total, and
+total bigram occurrences. Earlier filtering therefore does not redefine the
+base probabilities. Rows below `min_pmi` are removed. The command-line default
+is `0.0`.
+
+PMI is sensitive to low-frequency pairs and should be interpreted together with
+frequency.
+
+### Filter 4: Exposure Cap
+
+Limits retained bigram occurrences relative to the original volume token count.
+The implementation computes:
+
+```text
+maximum bigram occurrences = floor(max_exposure * total_tokens / 2)
+```
+
+It retains rows in their ranked order until adding another row would exceed the
+allowed occurrence budget. The command-line default for `max_exposure` is
+`0.15`.
+
+## Output Artifacts
+
+A run can create the following artifacts:
+
+| Path | Purpose |
+| --- | --- |
+| `exported_bigrams/` or `exported_bigrams_flat/` | Volume-level bigram TSV files. |
+| `results/<run_id>.csv` | Per-volume processing metrics and metadata. |
+| `provenance/<run_id>.json` | Run-level software, filter, and Stanza model provenance. |
+| `stopwords/top25_stopwords/` | Selected per-volume stopwords and frequencies. |
+| `stopwords/top25_dropped_bigrams/` | Bigrams removed by Filter 1. |
+| `pending_volumes.txt` | Volumes not exported and their reason codes. |
+| `logs/` | SLURM task output and error logs. |
+
+See [`README_EXPORT.md`](README_EXPORT.md) for the complete TSV and metadata
+specification.
+
+## Requirements
+
+- Python 3.9 or newer
+- Access to HathiTrust plain-text Pairtree ZIP volumes
+- Stanza tokenizer models for the target languages
+- NLTK stopword corpus
+- Sufficient memory and temporary storage for the selected worker count
+
+Install Python dependencies in a virtual environment:
+
 ```bash
-python run_pipeline.py \
-  --pairtree /N/project/htrc/data/ht_text \
-  --id-list htids.txt \
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
+```
+
+Install the NLTK stopword corpus into a persistent location:
+
+```bash
+export NLTK_DATA=/path/to/nltk_data
+python3 -m nltk.downloader -d "$NLTK_DATA" stopwords
+```
+
+Set the Stanza model directory:
+
+```bash
+export STANZA_RESOURCES_DIR=/path/to/stanza_resources
+```
+
+Stanza models should be downloaded before submitting large jobs. Compute nodes
+should not be expected to download models during processing.
+
+## Inputs
+
+### HTID List
+
+Provide one HTID per line. Empty lines and lines beginning with `#` are ignored.
+
+```text
+uc1.32106009966604
+mdp.39015008170840
+# optional comment
+```
+
+### Pairtree Root
+
+`--pairtree` must point to the root containing provider-specific Pairtree
+directories.
+
+### Language Metadata
+
+The deployment may provide HTRC JSON-LD bibliographic metadata. When a language
+value is available, it is preferred over statistical fallback detection.
+Language assignment is volume-level rather than page-level.
+
+## Running the Pipeline
+
+The main entry point is `run_pipeline.py`.
+
+```bash
+python3 run_pipeline.py \
+  --pairtree /path/to/ht_text \
+  --id-list /path/to/htids.txt \
   --min-freq 2 \
   --min-pmi 0.0 \
-  --max-exposure 0.15
+  --max-exposure 0.15 \
+  --flat-output
 ```
 
-## 🖥️ HPC Deployment (BigRed200)
+### Arguments
 
-Because this pipeline is specifically engineered for Indiana University's BigRed200 Supercomputer, local execution is constrained. To run the pipeline natively against the massive million-volume corpus on BigRed200, you must utilize the SLURM workload manager.
+| Argument | Required | Description |
+| --- | --- | --- |
+| `--pairtree` | Yes | Pairtree root containing source ZIP volumes. |
+| `--id-list` | Yes | UTF-8 text file containing one HTID per line. |
+| `--min-freq` | No | Minimum frequency supplied to Filter 2. |
+| `--min-pmi` | No | Minimum PMI supplied to Filter 3. |
+| `--max-exposure` | No | Exposure ratio parameter defined for Filter 4. |
+| `--flat-output` | No | Writes volume TSVs into one directory instead of a Pairtree-like hierarchy. |
 
-### 1. Beam the Code to the Cluster
-Use `scp` to securely copy the orchestrator, SLURM scheduler scripts, and the core structural `src/` package directly onto your cluster node allocation:
+The current HPC deployment paths are configured in `run_pipeline.py` and
+`submit_bigred.slurm`. Adapt those paths for the target environment before
+running outside the original deployment.
+
+## SLURM Execution
+
+`submit.sh` counts nonempty HTIDs and submits a SLURM array through
+`submit_bigred.slurm`.
+
 ```bash
-scp run_pipeline.py umkatta@bigred200.uits.iu.edu:/N/project/htrc/HTRC-Ngrams/
-scp submit_bigred.slurm submit.sh umkatta@bigred200.uits.iu.edu:/N/project/htrc/HTRC-Ngrams/
-scp -r src umkatta@bigred200.uits.iu.edu:/N/project/htrc/HTRC-Ngrams/
-```
-
-### 2. Physical Data Paths
-The extraction engine physically links to the dedicated HathiTrust storage mount point natively wired into BigRed200. Ensure your `submit_bigred.slurm` script correctly points to this static global Pairtree root:
-* **Storage Root:** `/N/project/htrc/data/ht_text`
-* **ID Mapping:** Make sure your `htids.txt` (the list of target volume IDs) is securely located in the exact same directory as your SLURM execution script. 
-
-### 3. Launch the Job
-Once your files successfully upload, securely SSH into BigRed200, navigate to the `HTRC-Ngrams/` launch directory, and queue the node allocation using the dynamic array wrapper:
-```bash
-ssh umkatta@bigred200.uits.iu.edu
-cd /N/project/htrc/HTRC-Ngrams/
+mkdir -p logs
 bash submit.sh
 ```
 
-### 4. Output Files
-The pipeline automatically manages cluster-safe locking to produce unified outputs:
-* `exported_bigrams/` - The permanent Pairtree directory containing the finished `.tsv` files.
-* `bigred_results.csv` - A single, atomic summary CSV containing statistics for every processed volume.
-* `pending_volumes.txt` - A real-time tracker of any volumes that failed to process (e.g., oversized, no tokens, missing zip).
-* `logs/` - Contains the individual SLURM `.out` logs for the active array tasks.
+Each array task receives a stride-based subset of the HTID list. Within each
+task, `SLURM_CPUS_PER_TASK` determines the multiprocessing worker count.
 
-## 📊 Package Structure
-* `run_pipeline.py` - Core execution orchestrator.
-* `submit.sh` - Dynamic SLURM array wrapper script.
-* `submit_bigred.slurm` - SLURM HPC job submission script.
-* `requirements.txt` - Python module dependencies.
-* `src/` - Encapsulated mathematical and NLP engines.
+Monitor a submitted job with the scheduler tools provided by the cluster:
 
----
+```bash
+squeue -u "$USER"
+```
 
-## 🧠 Pipeline Architecture (The 5 Filters)
+The pipeline uses checkpointing: if a target TSV already exists, that volume is
+skipped. Use separate output locations or clear prior outputs when intentionally
+rerunning an HTID with different filter settings.
 
-This pipeline processes massive historical books into useful datasets ("N-grams") without violating copyright or data-sharing laws. Our core directive is **Non-Consumptive Research**. This means we mathematically guarantee that it is impossible for anyone to read or reconstruct the original sentences of the book from our exported data using our 5 security steps (Filters 0 through 4).
+## Validation
 
-### Filter 0: Text Healing and Language Tagging
-Before computational math is applied, the text is formally stabilized: 
-1. **The "Page-Wall" Safety Guard:** Every single page is processed as an isolated island, completely dropping boundary shards to guarantee cross-page bigrams cannot physically merge.
-2. **End-of-Line Hyphenation Healing:** Scanners often break single words across two lines (`govern- \n ment -> government`). The software automatically restores them. 
-3. **Automatic Language Detection:** The ML engine bypasses massive English title pages by dropping sequentially into Page 20 and sampling 10 narrative pages to dynamically tag the entire volume's language profile.
-4. **Structural Cleanup:** Knowing the correct language allows the software to strip out specific garbage (like the French header `CHAPITRE`) and safely drop 1-letter fragments (like an OCR shattered `t` or `r`) while protecting valid international letters (like `à` or `y`).
+Validate all configured Stanza tokenizers:
 
-### Filter 1: The Top-25 Stopword Removal
-Instead of using a hard-coded list of English stopwords, the software calculates the 25 most frequent tokens **dynamically for every single book** based purely on physical occurrence arrays. It then deletes any phrase if *both* words are in that Top 25 list (for example, `"of the"`).
+```bash
+python3 scripts/validate_stanza_languages.py
+```
 
-### Filter 2: The Core Security Wall (Volume Minimums)
-This is the primary defense against text-reconstruction.
-If a bigram (e.g., a two-word phrase) appears exactly 1 or 2 times in a massive 400-page book, it is highly likely to be a highly-unique sentence fragment. If exported, a smart system could piece the fragments together to reconstruct the author's original sentence.
-*   **The Rule:** If a phrase does not appear at least `X` times in the book (our pilot defaults to `X=2`), it is permanently deleted.
+The validator checks:
 
-### Filter 3: Pointwise Mutual Information (PMI) Polish
-Filter 1 and 2 remove the garbage and dangerous data. Filter 3 mathematically isolates the "Quality" of the data that survived. To determine if two words actually belong together conceptually, we use **PMI (Pointwise Mutual Information)**. 
-*   **The Calculation:** `PMI = probability of the phrase / (probability of word 1 * probability of word 2)`
-*   **The Math:** We calculate how often the two words exist side-by-side, divided by how often they theoretically *should* bump into each other completely randomly.
+- all 20 language mappings and profiles;
+- tokenizer and MWT processor availability;
+- punctuation, numbers, and capitalization;
+- English contraction and hyphen behavior;
+- French elision behavior; and
+- Stanza model package names and checksums.
 
-If the score is positive, it means the words are tightly bonded and hold deep semantic meaning. If the score is negative (like `-1.5`), it means the words mathematically repel each other, and only ended up next to each other because of an OCR column-tear. Filter 3 lightly trims these negative repulsions based on the `--min-pmi` threshold.
+For an HPC smoke test:
 
-### Filter 4: The Maximum Exposure Cap
-Filter 4 is the absolute ultimate safeguard. Even if a book passes Filters 1, 2, and 3, it cannot be legally distributed if the resulting pure phrases naturally represent over 60% of the entire book. Filter 4 mandates that the final export dataset can **never represent more than a designated cap (default 15%) of the total word-mass of the book.**
-*   **The Budget:** The engine calculates exactly how many words are inside the book. A 15% cap on a 100,000 word mass legally allows a payload distribution of 15,000 words. 
-*   **The Ranking:** It primarily sorts the surviving dataset by Frequency, using the PMI score as a secondary ranking Tie-Breaker.
-*   **The Trimming:** The software begins dumping the absolute highest ranked arrays into the final output pool. The split-second the accumulated word-mass breaches the allowed budget, the software physically breaks the computational sequence and trims all surviving data!
+```bash
+mkdir -p logs
+sbatch smoke_test_bigred.slurm
+```
+
+## Repository Layout
+
+```text
+.
+├── run_pipeline.py
+├── requirements.txt
+├── submit.sh
+├── submit_bigred.slurm
+├── smoke_test_bigred.slurm
+├── scripts/
+│   └── validate_stanza_languages.py
+└── src/
+    ├── config.py
+    ├── engine_filters.py
+    ├── engine_io.py
+    ├── engine_nlp.py
+    ├── metrics.py
+    └── provenance.py
+```
+
+## Operational Notes
+
+- Pairtree ZIPs are streamed page by page rather than loaded as one volume.
+- Stanza pipelines are lazily initialized and cached once per worker process.
+- Result and pending-volume files use lock files for concurrent writes.
+- Large array runs should monitor lock contention, stale lock files, worker
+  memory, and filesystem metadata load.
+- The configured ZIP-size guard skips compressed input files above the
+  deployment threshold.
+- Output paths should include enough run context to avoid confusing artifacts
+  from different executions.
+
+## Related Documentation
+
+- [`README_EXPORT.md`](README_EXPORT.md): export schema and metadata reference.
+- [`limitations.md`](limitations.md): known tokenizer and interpretation
+  limitations.
