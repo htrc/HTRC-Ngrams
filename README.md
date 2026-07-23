@@ -170,22 +170,16 @@ It retains rows in their ranked order until adding another row would exceed the
 allowed occurrence budget. The command-line default for `max_exposure` is
 `0.15`.
 
-## Output Artifacts
+## Generated Files
 
-A run can create the following artifacts:
+The primary output is one volume-level bigram TSV per successfully processed
+HTID. Operational deployments can also create internal result summaries,
+provenance manifests, stopword audit files, pending-volume records, and
+scheduler logs. These supporting files are intended for pipeline operation and
+review and do not all need to be distributed with the research dataset.
 
-| Path | Purpose |
-| --- | --- |
-| `exported_bigrams/` or `exported_bigrams_flat/` | Volume-level bigram TSV files. |
-| `results/<run_id>.csv` | Per-volume processing metrics and metadata. |
-| `provenance/<run_id>.json` | Run-level software, filter, and Stanza model provenance. |
-| `stopwords/top25_stopwords/` | Selected per-volume stopwords and frequencies. |
-| `stopwords/top25_dropped_bigrams/` | Bigrams removed by Filter 1. |
-| `pending_volumes.txt` | Volumes not exported and their reason codes. |
-| `logs/` | SLURM task output and error logs. |
-
-See [`README_EXPORT.md`](README_EXPORT.md) for the complete TSV and metadata
-specification.
+See [`README_EXPORT.md`](README_EXPORT.md) for the files and fields that may be
+provided to researchers.
 
 ## Requirements
 

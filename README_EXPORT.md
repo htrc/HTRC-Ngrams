@@ -2,31 +2,29 @@
 
 ## Scope
 
-This document defines the volume-level bigram TSV files and associated metadata
-written by the HTRC N-grams Pipeline.
+This document defines the volume-level bigram TSV files and supporting metadata
+that may be distributed to researchers.
 
 Each TSV contains aggregated bigram types from one HathiTrust volume. It does
 not contain page numbers, token positions, sentence identifiers, or the
-original page text. Associated result and provenance files describe how the TSV
-was created.
+original page text. Published provenance and stopword information provide
+context for how the TSV was created.
 
 ## Output Set
 
-A processing run can produce:
+A research release can include:
 
 ```text
-exported_bigrams/
-exported_bigrams_flat/
-results/<run_id>.csv
+<htid>.tsv
 provenance/<run_id>.json
 stopwords/top25_stopwords/
-stopwords/top25_dropped_bigrams/
-pending_volumes.txt
-logs/
 ```
 
-`<run_id>` is derived from the SLURM array job ID, the SLURM job ID, or a
-timestamp for a non-SLURM invocation.
+The bigram TSV is the primary research file. Provenance and selected-stopword
+files can accompany it when those materials are included in the release.
+Internal processing summaries, dropped-bigram audit files, pending-volume
+records, and scheduler logs are operational artifacts and are not part of this
+export specification.
 
 ## Bigram TSV
 
@@ -226,40 +224,6 @@ Without PMI, rows follow `Counter.most_common()`, which orders primarily by
 descending frequency. Consumers requiring deterministic tie ordering should
 apply an explicit secondary sort.
 
-## Per-Volume Results CSV
-
-`results/<run_id>.csv` contains one row for each successfully exported volume.
-
-| Field | Description |
-| --- | --- |
-| `volume_name` | Filename-safe volume identifier used by the exporter. |
-| `zip_path` | Input Pairtree ZIP path. |
-| `language` | Resolved MARC language code. |
-| `stopword_source` | `nltk` or `stopwords-iso`. |
-| `stopword_list_code` | Source-specific stopword language identifier. |
-| `selected_stopword_count` | Number of selected volume stopwords, up to 25. |
-| `filter_1_enabled` | Recorded Filter 1 configuration. |
-| `filter_2_enabled` | Recorded Filter 2 configuration. |
-| `filter_3_enabled` | Recorded Filter 3 configuration. |
-| `output_file` | Bigram TSV path. |
-| `top25_stopword_file` | Selected-stopword audit path when produced. |
-| `dropped_bigram_file` | Filter 1 dropped-bigram audit path when produced. |
-| `total_pages` | Number of page text members streamed from the ZIP. |
-| `total_tokens` | Number of tokens produced across all retained pages. |
-| `unique_unigrams` | Number of distinct case-sensitive tokens. |
-| `unique_bigrams` | Number of exported distinct bigram types. |
-| `total_bigrams` | Sum of exported bigram frequencies. |
-| `unigram_mb` | Estimated serialized unigram storage size. |
-| `bigram_mb` | Estimated serialized exported-bigram storage size. |
-| `bigram_growth` | Estimated bigram size divided by estimated unigram size. |
-| `bigram_singleton_pct` | Percentage of exported types with frequency one. |
-| `htid` | Original HathiTrust volume identifier. |
-| `run_id` | Identifier linking the row to run provenance. |
-
-The CSV is appended concurrently through a lock file. A run-specific filename
-prevents rows with different schemas or configurations from being mixed in the
-same summary file.
-
 ## Run Provenance JSON
 
 `provenance/<run_id>.json` records shared processing context.
@@ -283,7 +247,7 @@ Current fields include:
 The manifest is created with exclusive file creation so concurrent array tasks
 do not write duplicate manifests.
 
-## Stopword Audit Files
+## Published Stopword Information
 
 ### Selected Stopwords
 
@@ -298,34 +262,6 @@ word<TAB>freq
 ```
 
 `word` is case-folded. `freq` combines case variants from the tokenized volume.
-
-### Dropped Bigrams
-
-```text
-stopwords/top25_dropped_bigrams/<htid>_dropped.tsv
-```
-
-Schema:
-
-```text
-w1<TAB>w2<TAB>freq
-```
-
-These files preserve the original token case for each dropped bigram.
-
-## Pending Volumes and Logs
-
-`pending_volumes.txt` contains an HTID and reason code for volumes that were not
-exported. Example reasons include:
-
-- missing ZIP;
-- oversized ZIP;
-- no tokens;
-- low language confidence;
-- unsupported stopword language; and
-- missing runtime dependency.
-
-SLURM output and error logs are written under `logs/`.
 
 ## Reading TSV Files
 
