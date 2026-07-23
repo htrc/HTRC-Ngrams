@@ -10,22 +10,6 @@ not contain page numbers, token positions, sentence identifiers, or the
 original page text. Published provenance and stopword information provide
 context for how the TSV was created.
 
-## Output Set
-
-A research release can include:
-
-```text
-<htid>.tsv
-provenance/<run_id>.json
-stopwords/top25_stopwords/
-```
-
-The bigram TSV is the primary research file. Provenance and selected-stopword
-files can accompany it when those materials are included in the release.
-Internal processing summaries, dropped-bigram audit files, pending-volume
-records, and scheduler logs are operational artifacts and are not part of this
-export specification.
-
 ## Bigram TSV
 
 ### Format
