@@ -138,6 +138,65 @@ LANGUAGE_PROFILES = {
         "script": "latin"
     },
 
+    # --- Additional HTRC Languages ---
+
+    "hin": {
+        "header_keywords": [
+            "अध्याय", "पुस्तक", "खंड", "पृष्ठ", "भाग",
+            "विषय सूची", "अनुक्रमणिका", "प्रस्तावना", "परिशिष्ट"
+        ],
+        "allowed_single_chars": [],
+        "script": "devanagari"
+    },
+    "hrv": {
+        "header_keywords": [
+            "POGLAVLJE", "KNJIGA", "SVEZAK", "STRANICA", "DIO",
+            "SADRŽAJ", "PREDGOVOR", "DODATAK", "KAZALO"
+        ],
+        "allowed_single_chars": ["a", "i", "u", "o", "s", "k"],
+        "script": "latin"
+    },
+    "tur": {
+        "header_keywords": [
+            "BÖLÜM", "KİTAP", "CİLT", "SAYFA", "KISIM",
+            "İÇİNDEKİLER", "ÖNSÖZ", "EK", "DİZİN"
+        ],
+        "allowed_single_chars": ["o"],
+        "script": "latin"
+    },
+    "nor": {
+        "header_keywords": [
+            "KAPITTEL", "BOK", "BIND", "SIDE", "DEL", "INNHOLD", "INNHALD",
+            "FORORD", "FØREORD", "VEDLEGG", "REGISTER"
+        ],
+        "allowed_single_chars": ["i", "å"],
+        "script": "latin"
+    },
+    "tha": {
+        "header_keywords": [
+            "บท", "หนังสือ", "เล่ม", "หน้า", "ส่วน",
+            "สารบัญ", "คำนำ", "ภาคผนวก", "ดัชนี"
+        ],
+        "allowed_single_chars": [],
+        "script": "thai"
+    },
+    "vie": {
+        "header_keywords": [
+            "CHƯƠNG", "SÁCH", "TẬP", "TRANG", "PHẦN", "MỤC LỤC",
+            "LỜI NÓI ĐẦU", "PHỤ LỤC", "CHỈ MỤC"
+        ],
+        "allowed_single_chars": ["a", "à", "ạ", "ở"],
+        "script": "latin"
+    },
+    "urd": {
+        "header_keywords": [
+            "باب", "کتاب", "جلد", "صفحہ", "حصہ", "فہرست",
+            "دیباچہ", "ضمیمہ", "اشاریہ"
+        ],
+        "allowed_single_chars": [],
+        "script": "arabic"
+    },
+
     # --- Fallbacks ---
 
     "default_latin": {

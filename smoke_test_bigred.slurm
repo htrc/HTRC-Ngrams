@@ -25,9 +25,9 @@ export NLTK_DATA=/N/project/htrc/nltk_data
 
 cd $SLURM_SUBMIT_DIR
 
-echo "Running 20-language Stanza tokenization validation..."
+echo "Running 27-language Stanza tokenization validation..."
 python3 scripts/validate_stanza_languages.py \
     --resource-dir "$STANZA_RESOURCES_DIR" \
-    --output "test_outputs/stanza_20_language_validation_bigred_${SLURM_JOB_ID}.tsv"
+    --output "test_outputs/stanza_27_language_validation_bigred_${SLURM_JOB_ID}.tsv"
 
 echo "Smoke test completed."

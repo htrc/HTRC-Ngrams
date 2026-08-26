@@ -69,6 +69,19 @@ VALIDATION_CASES = (
     ValidationCase("dan", "Danish", "Biblioteket har 2 bøger."),
     ValidationCase("ind", "Indonesian", "Perpustakaan memiliki 2 buku."),
     ValidationCase("hun", "Hungarian", "A könyvtárban 2 könyv van."),
+    ValidationCase(
+        "hin", "Hindi", "पुस्तकालय में 2 पुस्तकें हैं.", has_case=False
+    ),
+    ValidationCase("hrv", "Croatian", "Knjižnica ima 2 knjige."),
+    ValidationCase("tur", "Turkish", "Kütüphanede 2 kitap var."),
+    ValidationCase("nor", "Norwegian", "Biblioteket har 2 bøker."),
+    ValidationCase(
+        "tha", "Thai", "ห้องสมุดมีหนังสือ 2 เล่ม.", has_case=False
+    ),
+    ValidationCase("vie", "Vietnamese", "Thư viện có 2 cuốn sách."),
+    ValidationCase(
+        "urd", "Urdu", "کتب خانے میں 2 کتابیں ہیں.", has_case=False
+    ),
 )
 
 
@@ -87,7 +100,7 @@ def parse_args():
     parser.add_argument(
         "--output",
         type=Path,
-        default=PROJECT_ROOT / "test_outputs" / "stanza_20_language_validation.tsv",
+        default=PROJECT_ROOT / "test_outputs" / "stanza_27_language_validation.tsv",
         help="TSV report path.",
     )
     parser.add_argument(
@@ -246,9 +259,18 @@ def main():
         sc = result["stanza_code"]
         result["stanza_version"] = stanza.__version__
         result["stanza_resources_version"] = DEFAULT_RESOURCES_VERSION
-        
-        tok_md5 = resources_data.get(sc, {}).get("tokenize", {}).get(result["tok_pkg"], {}).get("md5", "")
-        mwt_md5 = resources_data.get(sc, {}).get("mwt", {}).get(result["mwt_pkg"], {}).get("md5", "")
+
+        resource_entry = resources_data.get(sc, {})
+        visited_aliases = set()
+        while "alias" in resource_entry:
+            if sc in visited_aliases:
+                break
+            visited_aliases.add(sc)
+            sc = resource_entry["alias"]
+            resource_entry = resources_data.get(sc, {})
+
+        tok_md5 = resource_entry.get("tokenize", {}).get(result["tok_pkg"], {}).get("md5", "")
+        mwt_md5 = resource_entry.get("mwt", {}).get(result["mwt_pkg"], {}).get("md5", "")
         
         result["tok_md5"] = tok_md5
         result["mwt_md5"] = mwt_md5

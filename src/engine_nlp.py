@@ -29,18 +29,43 @@ STANZA_LANG_MAP = {
     "dan": "da",
     "ind": "id",
     "hun": "hu",
+    "hin": "hi",
+    "hrv": "hr",
+    "tur": "tr",
+    "nor": "no",
+    "tha": "th",
+    "vie": "vi",
+    "urd": "ur",
 }
 
 STANZA_MWT_LANGS = {
     "en", "de", "fr", "es", "it", "pt", "ar",
-    "la", "nl", "pl", "he", "cs", "id"
+    "la", "nl", "pl", "he", "cs", "id", "tr"
 }
+
+
+class UnsupportedStanzaLanguageError(RuntimeError):
+    def __init__(self, language: str):
+        self.language = language
+        super().__init__(f"No Stanza language mapping is configured for '{language}'.")
+
+
+class StanzaPipelineInitializationError(RuntimeError):
+    def __init__(self, language: str, stanza_language: str, detail: str):
+        self.language = language
+        self.stanza_language = stanza_language
+        super().__init__(
+            f"Could not initialize Stanza '{stanza_language}' for '{language}': {detail}"
+        )
 
 def get_stanza_pipeline(lang: str):
     import stanza
     from stanza.pipeline.core import DownloadMethod
 
-    stanza_lang = STANZA_LANG_MAP.get(lang, lang)
+    if lang not in STANZA_LANG_MAP:
+        raise UnsupportedStanzaLanguageError(lang)
+
+    stanza_lang = STANZA_LANG_MAP[lang]
 
     if stanza_lang in _STANZA_PIPELINES:
         return _STANZA_PIPELINES[stanza_lang]
@@ -57,13 +82,23 @@ def get_stanza_pipeline(lang: str):
     if model_dir:
         kwargs["dir"] = model_dir
 
-    nlp = stanza.Pipeline(**kwargs)
+    try:
+        nlp = stanza.Pipeline(**kwargs)
+    except Exception as error:
+        raise StanzaPipelineInitializationError(
+            lang, stanza_lang, str(error)
+        ) from error
 
     _STANZA_PIPELINES[stanza_lang] = nlp
     return nlp
 
 def separate_inline_hyphens(text: str) -> str:
     return re.sub(r"(?<=[^\W_])-(?=[^\W_])", " - ", text, flags=re.UNICODE)
+
+
+def separate_vietnamese_sentence_punctuation(text: str) -> str:
+    return re.sub(r"([.!?。！？]+)(?=\s|$)", r" \1 ", text)
+
 
 def tokenize_with_stanza(text: str, lang: str):
     nlp = get_stanza_pipeline(lang)
@@ -187,7 +222,8 @@ def resolve_language(htid: str, pages: list, ef_root=None):
         # Prevents misclassification into micro-dialects (e.g. German -> Luxembourgish).
         langid.set_languages(['en', 'fr', 'es', 'de', 'it', 'pt', 'ru', 'zh', 'ja', 'ar',
                               'la', 'nl', 'pl', 'sv', 'he',
-                              'ko', 'cs', 'da', 'id', 'hu'])
+                              'ko', 'cs', 'da', 'id', 'hu',
+                              'hi', 'hr', 'tr', 'no', 'th', 'vi', 'ur'])
         iso_code, confidence = langid.classify(sample_text)
 
         # Confidence is a log-probability sum, which grows negatively with text length.
@@ -226,6 +262,13 @@ def resolve_language(htid: str, pages: list, ef_root=None):
             'da': 'dan',  # Danish
             'id': 'ind',  # Indonesian
             'hu': 'hun',  # Hungarian
+            'hi': 'hin',  # Hindi
+            'hr': 'hrv',  # Croatian
+            'tr': 'tur',  # Turkish
+            'no': 'nor',  # Norwegian
+            'th': 'tha',  # Thai
+            'vi': 'vie',  # Vietnamese
+            'ur': 'urd',  # Urdu
         }
         best_lang = marc_map.get(iso_code, iso_code)
 
@@ -343,6 +386,9 @@ def tokenize_page(text: str, profile: dict, lang: str = ""):
 
     # Force inline hyphens to be detached so Stanza splits them reliably
     text = separate_inline_hyphens(text)
+
+    if lang == "vie":
+        text = separate_vietnamese_sentence_punctuation(text)
 
     # Let Stanza handle Tokenization directly
     final_tokens = tokenize_with_stanza(text, lang)
