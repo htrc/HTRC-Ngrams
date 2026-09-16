@@ -17,6 +17,8 @@
 # BigRed200 HTRC N-grams Execution Script
 # ---------------------------------------------------------------------------
 
+set -euo pipefail
+
 echo "=========================================================="
 echo "Job Start Time: $(date)"
 echo "Running on node: $SLURMD_NODENAME"
@@ -37,6 +39,11 @@ PAIRTREE_ROOT="/N/project/htrc/data/ht_text"
 
 # This text file must be in the same folder as this script, containing your IDs
 ID_LIST="htids.txt"
+RUN_ROOT="runs/current_run"
+
+OUTPUT_DIR="$RUN_ROOT/bigrams"
+AUDIT_DIR="$RUN_ROOT/audit"
+METADATA_DIR="$RUN_ROOT/metadata"
 
 # 4. Execute the Python workload
 echo "Commencing HPC massive Pairtree reading pipeline..."
@@ -45,6 +52,9 @@ echo "Commencing HPC massive Pairtree reading pipeline..."
 python3 -u run_pipeline.py \
     --pairtree "$PAIRTREE_ROOT" \
     --id-list "$ID_LIST" \
+    --output-dir "$OUTPUT_DIR" \
+    --audit-dir "$AUDIT_DIR" \
+    --metadata-dir "$METADATA_DIR" \
     --min-freq 2 \
     --min-pmi 0.0 \
     --max-exposure 0.15 \

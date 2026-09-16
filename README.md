@@ -28,7 +28,7 @@ For each HTID, the pipeline:
 
 1. Resolves the Pairtree ZIP path.
 2. Resolves one language for the volume from JSON-LD metadata when available.
-3. Uses `langid` as a constrained fallback across the 20 supported languages.
+3. Uses `langid` as a constrained fallback across the 27 supported languages.
 4. Streams the volume one page at a time.
 5. Removes recognized scanner boilerplate pages.
 6. Examines likely header and footer lines at the beginning and end of a page.
@@ -71,6 +71,13 @@ metadata codes are normalized to these configured profiles when necessary.
 | Danish | `dan` | `da` | NLTK |
 | Indonesian | `ind` | `id` | NLTK |
 | Hungarian | `hun` | `hu` | NLTK |
+| Hindi | `hin` | `hi` | stopwords-iso |
+| Croatian | `hrv` | `hr` | stopwords-iso |
+| Turkish | `tur` | `tr` | NLTK |
+| Norwegian | `nor` | `no` (Bokmål alias) | NLTK |
+| Thai | `tha` | `th` | stopwords-iso |
+| Vietnamese | `vie` | `vi` | stopwords-iso |
+| Urdu | `urd` | `ur` | stopwords-iso |
 
 The aliases `ger`, `fre`, `chi`, and `ces` are normalized to the corresponding
 configured profiles.
@@ -110,8 +117,8 @@ is normalized to:
 international
 ```
 
-Tokenizer behavior is model-specific. Known behavior discovered during
-validation is documented in [`limitations.md`](limitations.md).
+Tokenizer behavior is model-specific. Known model-specific behavior is
+documented in [`limitations.md`](limitations.md).
 
 ## Filtering
 
@@ -245,10 +252,13 @@ The main entry point is `run_pipeline.py`.
 python3 run_pipeline.py \
   --pairtree /path/to/ht_text \
   --id-list /path/to/htids.txt \
+  --output-dir /path/to/output \
+  --audit-dir /path/to/audit \
+  --metadata-dir /path/to/metadata \
   --min-freq 2 \
   --min-pmi 0.0 \
   --max-exposure 0.15 \
-  --flat-output
+  --no-filter3
 ```
 
 ### Arguments
@@ -257,6 +267,12 @@ python3 run_pipeline.py \
 | --- | --- | --- |
 | `--pairtree` | Yes | Pairtree root containing source ZIP volumes. |
 | `--id-list` | Yes | UTF-8 text file containing one HTID per line. |
+| `--output-dir` | Yes | Directory to save volume TSVs and task logs. |
+| `--audit-dir` | Yes | Directory to save audit files (e.g., dropped bigrams). |
+| `--metadata-dir` | Yes | Directory to save global run provenance metadata. |
+| `--filter1` / `--no-filter1` | No | Enable/disable Filter 1 (Standard Stopwords). Default: enabled. |
+| `--filter2` / `--no-filter2` | No | Enable/disable Filter 2 (Min Frequency). Default: disabled. |
+| `--filter3` / `--no-filter3` | No | Enable/disable Filter 3 (PMI). Default: enabled. |
 | `--min-freq` | No | Minimum frequency supplied to Filter 2. |
 | `--min-pmi` | No | Minimum PMI supplied to Filter 3. |
 | `--max-exposure` | No | Exposure ratio parameter defined for Filter 4. |
@@ -285,33 +301,7 @@ Monitor a submitted job with the scheduler tools provided by the cluster:
 squeue -u "$USER"
 ```
 
-The pipeline uses checkpointing: if a target TSV already exists, that volume is
-skipped. Use separate output locations or clear prior outputs when intentionally
-rerunning an HTID with different filter settings.
-
-## Validation
-
-Validate all configured Stanza tokenizers:
-
-```bash
-python3 scripts/validate_stanza_languages.py
-```
-
-The validator checks:
-
-- all 20 language mappings and profiles;
-- tokenizer and MWT processor availability;
-- punctuation, numbers, and capitalization;
-- English contraction and hyphen behavior;
-- French elision behavior; and
-- Stanza model package names and checksums.
-
-For an HPC smoke test:
-
-```bash
-mkdir -p logs
-sbatch smoke_test_bigred.slurm
-```
+The pipeline uses checkpoint validation: if a target TSV already exists and possesses both a valid header and a final newline byte, that volume is treated as complete and skipped. Use separate output locations or clear prior outputs when intentionally rerunning an HTID with different filter settings.
 
 ## Repository Layout
 
@@ -321,11 +311,9 @@ sbatch smoke_test_bigred.slurm
 ├── requirements.txt
 ├── submit.sh
 ├── submit_bigred.slurm
-├── smoke_test_bigred.slurm
-├── scripts/
-│   └── validate_stanza_languages.py
 └── src/
     ├── config.py
+    ├── engine_export.py
     ├── engine_filters.py
     ├── engine_io.py
     ├── engine_nlp.py
@@ -335,15 +323,12 @@ sbatch smoke_test_bigred.slurm
 
 ## Operational Notes
 
+- **Atomic Writes:** Volume TSVs are written to a `.tmp` file first and then atomically renamed to `.tsv` to reduce the risk of data corruption even if a node crashes mid-write.
+- **Lockless Chunking:** Results and pending volume logs are no longer written to a single shared file. Instead, each SLURM array task writes its own chunked file (e.g., `runs/<run_id>/results/task_0001.csv`). This is a shared-nothing architecture designed specifically for Lustre filesystems (like BigRed200) to avoid shared-file lock contention. You will need to merge these files downstream if you require a single metadata log.
+- **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that your filter configuration exactly matches the existing files. If you change a parameter (like `--min-freq`), the pipeline will abort to prevent silent data corruption.
 - Pairtree ZIPs are streamed page by page rather than loaded as one volume.
 - Stanza pipelines are lazily initialized and cached once per worker process.
-- Result and pending-volume files use lock files for concurrent writes.
-- Large array runs should monitor lock contention, stale lock files, worker
-  memory, and filesystem metadata load.
-- The configured ZIP-size guard skips compressed input files above the
-  deployment threshold.
-- Output paths should include enough run context to avoid confusing artifacts
-  from different executions.
+- The configured ZIP-size guard skips compressed input files above the deployment threshold.
 
 ## Related Documentation
 

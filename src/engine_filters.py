@@ -34,6 +34,8 @@ STOPWORD_PROFILES = {
     "dan": {"source": "nltk", "code": "danish"},
     "ind": {"source": "nltk", "code": "indonesian"},
     "hun": {"source": "nltk", "code": "hungarian"},
+    "tur": {"source": "nltk", "code": "turkish"},
+    "nor": {"source": "nltk", "code": "norwegian"},
 
     # stopwords-iso fallback lists
     "jpn": {"source": "stopwords-iso", "code": "ja"},
@@ -41,6 +43,11 @@ STOPWORD_PROFILES = {
     "pol": {"source": "stopwords-iso", "code": "pl"},
     "kor": {"source": "stopwords-iso", "code": "ko"},
     "cze": {"source": "stopwords-iso", "code": "cs"},
+    "hin": {"source": "stopwords-iso", "code": "hi"},
+    "hrv": {"source": "stopwords-iso", "code": "hr"},
+    "tha": {"source": "stopwords-iso", "code": "th"},
+    "vie": {"source": "stopwords-iso", "code": "vi"},
+    "urd": {"source": "stopwords-iso", "code": "ur"},
 }
 
 
