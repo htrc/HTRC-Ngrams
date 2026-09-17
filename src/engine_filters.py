@@ -101,8 +101,6 @@ def get_standard_stopwords(lang: str) -> set[str]:
     }
 
 
-def get_stopword_source(lang: str) -> str:
-    return get_stopword_profile(lang)["source"]
 def select_top_standard_stopwords(unigram_counts, lang: str, top_n: int = 25):
     """Select the most frequent tokens that are in the standard stopword list."""
     standard_stopwords = get_standard_stopwords(lang)

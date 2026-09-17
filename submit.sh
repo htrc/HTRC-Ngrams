@@ -1,8 +1,23 @@
 #!/bin/bash
-N=$(grep -vc '^\s*$\|^#' htids.txt)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+echo "🔎 Validating the pinned runtime and NLP resources..."
+python3 scripts/validate_environment.py
+
+ID_LIST="${ID_LIST:-htids.txt}"
+
+if [ ! -f "$ID_LIST" ]; then
+    echo "❌ HTID list not found: $ID_LIST"
+    exit 1
+fi
+
+N=$(awk 'NF && $0 !~ /^[[:space:]]*#/ {count++} END {print count+0}' "$ID_LIST")
 
 if [ "$N" -eq 0 ]; then
-    echo "❌ htids.txt is empty!"
+    echo "❌ $ID_LIST is empty!"
     exit 1
 fi
 
@@ -16,5 +31,5 @@ fi
 
 echo "📦 Submitting $N volume(s) across $((ARRAY_MAX+1)) task(s)..."
 mkdir -p logs
-sbatch --array=0-$ARRAY_MAX submit_bigred.slurm
+sbatch --export=ALL,ID_LIST="$ID_LIST" --array=0-$ARRAY_MAX submit_bigred.slurm
 echo "✅ Monitor with: squeue -u $USER"

@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "python_version": "3.12.11",
+  "packages": {
+    "langid": "1.1.6",
+    "nltk": "3.9.2",
+    "stanza": "1.11.0",
+    "stopwordsiso": "0.6.1"
+  },
+  "nltk_resources": {
+    "stopwords": {
+      "file_count": 33,
+      "sha256": "494f4a9e9b30f8c6443d1ecbac1aafc4f3b4d4e06bd32038628106bee3e9d604"
+    }
+  },
+  "stanza_resources_release": "1.11.0",
+  "stanza_models": {
+    "ara": {"stanza_code": "ar", "resolved_stanza_code": "ar", "tokenize": {"package": "padt", "md5": "c4c64f538e19b5e6ea2598aaa4d62983"}, "mwt": {"package": "padt", "md5": "7f8146e60ba4aa7f3e10e483112e567b"}},
+    "cze": {"stanza_code": "cs", "resolved_stanza_code": "cs", "tokenize": {"package": "pdt", "md5": "f248abfaa0fd534033155ae17ceaa428"}, "mwt": {"package": "pdt", "md5": "5e23d8d04b2e04bfdd8bf4b2872f2a5f"}},
+    "dan": {"stanza_code": "da", "resolved_stanza_code": "da", "tokenize": {"package": "ddt", "md5": "01c619eebc5f42730b47e3fbd4461f76"}, "mwt": null},
+    "deu": {"stanza_code": "de", "resolved_stanza_code": "de", "tokenize": {"package": "combined", "md5": "8e5a4c90e48f5794acf470828b91f013"}, "mwt": {"package": "combined", "md5": "44a59d7602fd59a58428b80f39406cc5"}},
+    "dut": {"stanza_code": "nl", "resolved_stanza_code": "nl", "tokenize": {"package": "alpino", "md5": "6971fb959cf2cfd7efb37601f1655531"}, "mwt": {"package": "alpino", "md5": "a3f8426111699af7df40467890cc84a6"}},
+    "eng": {"stanza_code": "en", "resolved_stanza_code": "en", "tokenize": {"package": "combined", "md5": "89a9c52688ac0ea655ee9f5388e61fe9"}, "mwt": {"package": "combined", "md5": "6e49e64f630823cfcd8ab62ca59f42fc"}},
+    "fra": {"stanza_code": "fr", "resolved_stanza_code": "fr", "tokenize": {"package": "combined", "md5": "7164716a5a2aabb0679a79f42f169897"}, "mwt": {"package": "combined", "md5": "9f9f1fd67d7f7eded5ef2f291551383f"}},
+    "heb": {"stanza_code": "he", "resolved_stanza_code": "he", "tokenize": {"package": "combined_nocharlm", "md5": "e09df4368cd6f203375d189292dd2285"}, "mwt": {"package": "combined", "md5": "f9ac0e43643035b597ede04be0b97a47"}},
+    "hin": {"stanza_code": "hi", "resolved_stanza_code": "hi", "tokenize": {"package": "hdtb", "md5": "6745227bbf10fa83d3e7ea7181db9bbc"}, "mwt": null},
+    "hrv": {"stanza_code": "hr", "resolved_stanza_code": "hr", "tokenize": {"package": "set", "md5": "347ecec8c1a60f68435b0c902ae14ebc"}, "mwt": null},
+    "hun": {"stanza_code": "hu", "resolved_stanza_code": "hu", "tokenize": {"package": "szeged", "md5": "66cb9c4d6b8a919f6b72c2424268afee"}, "mwt": null},
+    "ind": {"stanza_code": "id", "resolved_stanza_code": "id", "tokenize": {"package": "gsd", "md5": "54464ad525817712d7402d3e6e128a39"}, "mwt": {"package": "gsd", "md5": "43eacd989d990ee008217bcd5df1cb43"}},
+    "ita": {"stanza_code": "it", "resolved_stanza_code": "it", "tokenize": {"package": "combined", "md5": "f899329597f1e3fd9930328aa03b1902"}, "mwt": {"package": "combined", "md5": "b8b1dea345e19b390f3d893eb1804dde"}},
+    "jpn": {"stanza_code": "ja", "resolved_stanza_code": "ja", "tokenize": {"package": "combined_nocharlm", "md5": "51a42d0ac32bd8edcac1d4c6928d0d36"}, "mwt": null},
+    "kor": {"stanza_code": "ko", "resolved_stanza_code": "ko", "tokenize": {"package": "kaist", "md5": "9a29e953d6e619703374cc9e4b1b4040"}, "mwt": null},
+    "lat": {"stanza_code": "la", "resolved_stanza_code": "la", "tokenize": {"package": "ittb", "md5": "177cc8348d0b2c0396d533b17595da19"}, "mwt": {"package": "ittb", "md5": "5e11df4d5ecba6901605abdf2d640bb8"}},
+    "nor": {"stanza_code": "no", "resolved_stanza_code": "nb", "tokenize": {"package": "bokmaal", "md5": "6b9a174c83441d8b28401bd9b37a3863"}, "mwt": null},
+    "pol": {"stanza_code": "pl", "resolved_stanza_code": "pl", "tokenize": {"package": "pdb", "md5": "8c6d2c2c47442a8b04b04e8687dd895f"}, "mwt": {"package": "pdb", "md5": "4f0d582b9dab65704453be9d38846175"}},
+    "por": {"stanza_code": "pt", "resolved_stanza_code": "pt", "tokenize": {"package": "bosque", "md5": "5a270fd4df72d7877021aaee2acc616d"}, "mwt": {"package": "bosque", "md5": "6e7909d03728aca5772d35a127efe2e2"}},
+    "rus": {"stanza_code": "ru", "resolved_stanza_code": "ru", "tokenize": {"package": "syntagrus", "md5": "dbc2187177a7f8667defe6d1cee6fe60"}, "mwt": null},
+    "spa": {"stanza_code": "es", "resolved_stanza_code": "es", "tokenize": {"package": "combined", "md5": "3dabb752b7c9d6c26ddd3c94b6c5fb17"}, "mwt": {"package": "combined", "md5": "b27837acb40d7c023528b50881a39ac3"}},
+    "swe": {"stanza_code": "sv", "resolved_stanza_code": "sv", "tokenize": {"package": "talbanken", "md5": "c4332380bf7c93ecdb971f3bad84b54d"}, "mwt": null},
+    "tha": {"stanza_code": "th", "resolved_stanza_code": "th", "tokenize": {"package": "tud", "md5": "759b5a77ba44ad31d67428705bd3fcd8"}, "mwt": null},
+    "tur": {"stanza_code": "tr", "resolved_stanza_code": "tr", "tokenize": {"package": "imst", "md5": "0f48a3210646c70aca1c897bcd74a387"}, "mwt": {"package": "imst", "md5": "66ec91634226efd5de24867c28180ed5"}},
+    "urd": {"stanza_code": "ur", "resolved_stanza_code": "ur", "tokenize": {"package": "udtb", "md5": "9adbf238032ebb14ee1ee75585e2f9e8"}, "mwt": null},
+    "vie": {"stanza_code": "vi", "resolved_stanza_code": "vi", "tokenize": {"package": "vtb", "md5": "c469733626ea25760d18ec739c01896b"}, "mwt": null},
+    "zho": {"stanza_code": "zh-hans", "resolved_stanza_code": "zh-hans", "tokenize": {"package": "gsdsimp", "md5": "48f993223d568afedc2893f7cd76719c"}, "mwt": null}
+  }
+}

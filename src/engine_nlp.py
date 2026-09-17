@@ -2,6 +2,7 @@ import re
 import os
 from collections import Counter
 from .config import LANGUAGE_PROFILES
+from .engine_io import MetadataAccessError, MetadataPermissionError
 
 _STANZA_PIPELINES = {}
 
@@ -43,11 +44,48 @@ STANZA_MWT_LANGS = {
     "la", "nl", "pl", "he", "cs", "id", "tr"
 }
 
+LANGUAGE_ALIASES = {
+    "chi": "zho",
+    "zho": "zho",
+    "ger": "deu",
+    "deu": "deu",
+    "fre": "fra",
+    "fra": "fra",
+    "ces": "cze",
+    "cze": "cze",
+}
+
+
+def canonicalize_language(lang: str) -> str:
+    """Normalize supported bibliographic aliases to one internal code."""
+    normalized = (lang or "").strip().lower()
+    return LANGUAGE_ALIASES.get(normalized, normalized)
+
+
+SUPPORTED_LANGUAGE_CODES = frozenset(
+    code
+    for code in LANGUAGE_PROFILES
+    if code in STANZA_LANG_MAP
+)
+
+
+def is_supported_language(lang: str) -> bool:
+    return canonicalize_language(lang) in SUPPORTED_LANGUAGE_CODES
+
 
 class UnsupportedStanzaLanguageError(RuntimeError):
     def __init__(self, language: str):
         self.language = language
         super().__init__(f"No Stanza language mapping is configured for '{language}'.")
+
+
+class UnsupportedLanguageResolutionError(RuntimeError):
+    def __init__(self, language: str, source: str):
+        self.language = canonicalize_language(language) or "unknown"
+        self.source = source
+        super().__init__(
+            f"Language '{language}' from {source} is not supported by the pipeline."
+        )
 
 
 class StanzaPipelineInitializationError(RuntimeError):
@@ -62,6 +100,7 @@ def get_stanza_pipeline(lang: str):
     import stanza
     from stanza.pipeline.core import DownloadMethod
 
+    lang = canonicalize_language(lang)
     if lang not in STANZA_LANG_MAP:
         raise UnsupportedStanzaLanguageError(lang)
 
@@ -115,8 +154,7 @@ def tokenize_with_stanza(text: str, lang: str):
 class LowConfidenceLanguageError(RuntimeError):
     """
     Raised when langid's confidence score is too low to trust.
-    Volume is skipped and logged to pending_volumes.txt for retry
-    once EF metadata covers it (Blocker 7 Stage 1 fix).
+    The volume is recorded in the task-specific pending log for review.
     """
 
 SCANNER_BOILERPLATE_MARKERS = [
@@ -152,43 +190,38 @@ def get_lang_from_jsonld(jsonld_path) -> str:
     Returns None if field not found.
     """
     try:
-        import bz2, re
+        import bz2
         with bz2.open(jsonld_path, 'rt', encoding='utf-8') as f:
             content = f.read()
 
         # 1. Standard: "language" : "eng"
-        m1 = re.search(r'"language"\s*:\s*"([a-z]{3})"', content)
-        if m1: return m1.group(1)
+        m1 = re.search(r'"language"\s*:\s*"([a-z]{3})"', content, re.IGNORECASE)
+        if m1: return m1.group(1).lower()
 
         # 2. Array (single or multiple): "language" : [ "eng", "gle" ]
         # By removing the strict closing bracket `\]`, we just grab the very first language code in the array.
-        m2 = re.search(r'"language"\s*:\s*\[\s*"([a-z]{3})"', content)
-        if m2: return m2.group(1)
+        m2 = re.search(r'"language"\s*:\s*\[\s*"([a-z]{3})"', content, re.IGNORECASE)
+        if m2: return m2.group(1).lower()
 
         # 3. RDF Value: "language": [{"@value": "eng"}]
-        m3 = re.search(r'"language"\s*:\s*\[\s*\{\s*"@value"\s*:\s*"([a-z]{3})"', content)
-        if m3: return m3.group(1)
+        m3 = re.search(r'"language"\s*:\s*\[\s*\{\s*"@value"\s*:\s*"([a-z]{3})"', content, re.IGNORECASE)
+        if m3: return m3.group(1).lower()
 
         # 4. RDF Node: "language": "http://id.loc.gov/vocabulary/languages/eng"
-        m4 = re.search(r'"language"\s*:\s*".*?/languages/([a-z]{3})"', content)
-        if m4: return m4.group(1)
+        m4 = re.search(r'"language"\s*:\s*".*?/languages/([a-z]{3})"', content, re.IGNORECASE)
+        if m4: return m4.group(1).lower()
 
-    except Exception as e:
-        return f"ERROR: {e}"
+    except PermissionError as error:
+        raise MetadataPermissionError(jsonld_path, str(error)) from error
+    except Exception as error:
+        raise MetadataAccessError(jsonld_path, str(error)) from error
     return None
-
-LANGUAGE_ALIASES = {
-    "chi": "zho",
-    "ces": "cze",
-    "ger": "deu",
-    "fre": "fra",
-}
 
 def resolve_language(htid: str, pages: list, ef_root=None):
     """
     Determine the optimal language profile for the volume.
     First checks metadata, then falls back to langid sampling.
-    Returns 'default_latin' if detection fails.
+    Returns a canonical supported language code or raises a typed error.
     """
     print(f"  [Language Resolver] Initializing for '{htid}'...")
 
@@ -199,21 +232,42 @@ def resolve_language(htid: str, pages: list, ef_root=None):
         if jsonld_path:
             print(f"  [Language Resolver] 🔎 STAGE 1: Found file at {jsonld_path}, attempting to extract language...")
             metadata_lang = get_lang_from_jsonld(jsonld_path)
-            if metadata_lang and not metadata_lang.startswith("ERROR:"):
-                metadata_lang = LANGUAGE_ALIASES.get(metadata_lang, metadata_lang)
-                print(f"  [Language Resolver] ⚡ STAGE 1 SUCCESS: JSON-LD metadata → '{metadata_lang}'")
-                return metadata_lang
+            if metadata_lang:
+                canonical_lang = canonicalize_language(metadata_lang)
+                if not is_supported_language(canonical_lang):
+                    raise UnsupportedLanguageResolutionError(
+                        metadata_lang, "JSON-LD metadata"
+                    )
+                print(f"  [Language Resolver] ⚡ STAGE 1 SUCCESS: JSON-LD metadata → '{canonical_lang}'")
+                return canonical_lang
             else:
-                err_msg = metadata_lang if metadata_lang else "'language' key missing"
-                print(f"  [Language Resolver] ❌ STAGE 1 MISS: File found, but {err_msg}.")
+                print(
+                    "  [Language Resolver] ❌ STAGE 1 MISS: "
+                    "File found, but 'language' key missing."
+                )
         else:
             print(f"  [Language Resolver] ❌ STAGE 1 MISS: No physical JSON-LD file found for {htid}.")
         print(f"  [Language Resolver] Moving to Stage 2...")
 
     # --- FALLBACK: langid DETECTION ---
-    # Sample pages 40-60 to skip title pages, prefaces, and multi-language frontmatter.
-    # For short books (< 60 pages), use the middle third as the safest approximation.
-    sample_text = " ".join(pages[40:60]).lower() if len(pages) > 60 else " ".join(pages[len(pages)//3:]).lower()
+    # Sample pages 40-60 for long books. Short books use all available pages so
+    # that language detection is not based on only one title or contents page.
+    sample_pages = pages[40:60] if len(pages) > 60 else pages
+    sample_text = " ".join(
+        page for page in sample_pages if page and page.strip()
+    ).lower()
+
+    # If the interior window of a long volume is blank, retry with every page
+    # available in the language-sampling pass.
+    if not sample_text.strip() and len(pages) > 60:
+        sample_text = " ".join(
+            page for page in pages if page and page.strip()
+        ).lower()
+
+    if not sample_text.strip():
+        raise LowConfidenceLanguageError(
+            "No non-empty text was available for language detection."
+        )
 
     try:
         import langid
@@ -270,21 +324,26 @@ def resolve_language(htid: str, pages: list, ef_root=None):
             'vi': 'vie',  # Vietnamese
             'ur': 'urd',  # Urdu
         }
-        best_lang = marc_map.get(iso_code, iso_code)
+        best_lang = canonicalize_language(marc_map.get(iso_code, iso_code))
+
+        if not is_supported_language(best_lang):
+            raise UnsupportedLanguageResolutionError(best_lang, "langid")
 
         print(f"  [Language Resolver] 🔍 STAGE 2 SUCCESS: 'langid' ML profiled base text as '{best_lang}' (Confidence: {confidence:.2f})")
         return best_lang
 
-    except ImportError:
-        print(f"  [Language Resolver] ⚠️ STAGE 2 MISS: 'langid' module not installed on cluster. Engaging STAGE 3 Failsafe...")
-        return "default_latin"
+    except ImportError as error:
+        print("  [Language Resolver] ⚠️ STAGE 2 MISS: 'langid' is not installed.")
+        raise ImportError(
+            "The langid package is required when usable language metadata is unavailable."
+        ) from error
 
 def get_profile(lang: str):
-    """Retrieve the language execution profile, falling back to safe limits."""
-    lang = LANGUAGE_ALIASES.get(lang, lang)
-    if lang in LANGUAGE_PROFILES:
-        return LANGUAGE_PROFILES[lang]
-    return LANGUAGE_PROFILES["default_latin"]
+    """Retrieve a canonical supported language execution profile."""
+    canonical_lang = canonicalize_language(lang)
+    if not is_supported_language(canonical_lang):
+        raise UnsupportedLanguageResolutionError(lang, "language profile lookup")
+    return LANGUAGE_PROFILES[canonical_lang]
 
 def is_header_footer(line: str, profile: dict) -> bool:
     """Evaluate if a line matches specific OCR/Header rejection criteria."""
@@ -352,8 +411,14 @@ def tokenize_page(text: str, profile: dict, lang: str = ""):
     text = re.sub(r'[\u200B\u200C\u200D\uFEFF]', '', text)
 
     if profile.get("script") == "hebrew":
-        # Strip Hebrew vowels (Niqqud) and cantillation marks
-        text = re.sub(r'[\u0591-\u05C7]', '', text)
+        # Strip Hebrew vowels (niqqud) and cantillation marks while preserving
+        # punctuation such as maqaf (U+05BE) and sof pasuq (U+05C3).
+        text = re.sub(
+            r'[\u0591-\u05BD\u05BF\u05C1-\u05C2\u05C4-\u05C5\u05C7]',
+            '',
+            text,
+        )
+        text = re.sub(r'([\u05BE\u05C0\u05C3\u05C6\u05F3\u05F4])', r' \1 ', text)
 
     # Force inline hyphens to be detached so Stanza splits them reliably
     text = separate_inline_hyphens(text)

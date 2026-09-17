@@ -27,7 +27,19 @@ context for how the TSV was created.
 
 The files are written with Python's `csv.writer` using a tab delimiter.
 CSV-aware readers should therefore retain normal quote processing. A token that
-contains a quotation mark may be represented with CSV escaping.
+contains a quotation mark is represented with CSV escaping.
+
+For example, a bigram containing two literal double-quote tokens with frequency
+`473` is stored in the raw TSV as:
+
+```text
+""""<TAB>""""<TAB>473
+```
+
+Each `""""` field decodes to one `"` token. It does not represent four quote
+tokens or a damaged row. A CSV-aware tab-delimited reader returns the logical
+values `['"', '"', '473']`. Do not parse these files with a plain string split
+that ignores CSV quoting.
 
 ### Three-Column Schema
 
@@ -157,7 +169,13 @@ Interpret it together with `freq`.
 
 ## Filters
 
-The filtering module defines four operations.
+The current release-candidate policy applies Filters 1, 2, and 3 in order, with
+`min_freq=2` and `min_pmi=0.0`. Final red-team confirmation is pending, so the
+run provenance and `run_metadata.json` remain the authoritative record for a
+specific export.
+
+The filtering module also contains an experimental Filter 4 helper, but
+`run_pipeline.py` does not call it and it does not alter exported rows.
 
 ### Filter 1: Standard Stopword Bigrams
 
@@ -199,6 +217,9 @@ next row would exceed the budget. The reported exposure is:
 2 * retained bigram occurrences / total_tokens
 ```
 
+This describes the unused helper only. Filter 4 is not part of the current
+release-candidate policy and provides no reconstruction guarantee.
+
 ## Row Ordering
 
 When PMI is included, rows are sorted by descending frequency and then
@@ -225,11 +246,82 @@ Current fields include:
 | `nltk_version` | Installed NLTK package version. |
 | `stopwordsiso_version` | Installed stopwordsiso package version. |
 | `langid_version` | Installed langid package version. |
+| `environment_lock` | Schema version and SHA256 fingerprint of the approved environment lock used by the run. |
 | `filters` | Recorded filter switches and numeric thresholds. |
 | `stanza_models` | Tokenizer and MWT package names and manifest MD5 values. |
 
 The manifest is created with exclusive file creation so concurrent array tasks
 do not write duplicate manifests.
+
+The repository-level `environment.lock.json` is the reproducibility contract
+for the runtime. It pins Python and direct package versions, identifies the
+NLTK stopword corpus by a normalized content checksum, and pins each configured
+Stanza tokenizer and MWT model by package name and MD5. The run provenance JSON
+records the lock's SHA256 fingerprint so a published run can be connected to
+the exact reviewed environment definition.
+
+## Operational Diagnostics
+
+Operational diagnostics are task-sharded to avoid multiple SLURM workers
+writing to the same file. They support pipeline review and do not need to be
+distributed with the research dataset.
+
+### Task Result CSV
+
+Each successful-volume row includes page-reading diagnostics:
+
+| Field | Definition |
+| --- | --- |
+| `source_text_pages` | Number of `.txt` page members found in the source ZIP. |
+| `total_pages` | Number of page members successfully decoded and processed. |
+| `failed_pages` | Number of page members that could not be read. |
+| `decoding_warnings` | Number of pages decoded with the Latin-1 fallback after UTF-8 decoding failed. |
+
+It also records the following volume-level output metrics:
+
+| Field | Definition |
+| --- | --- |
+| `total_tokens` | Number of tokens produced before bigram filters are applied. Punctuation and numbers count as tokens. |
+| `distinct_bigram_types` | Number of distinct bigram rows retained after the configured filters. |
+| `total_bigram_occurrences` | Sum of `freq` across all retained bigram rows. |
+| `singleton_percentage` | Percentage of retained bigram types whose `freq` equals one. |
+| `tsv_size_bytes` | Actual size of the completed volume TSV measured from the filesystem. |
+| `tsv_size_mb` | `tsv_size_bytes` converted to MiB using 1,048,576 bytes per MiB. |
+
+`distinct_bigram_types` is a per-volume count. When task summaries add these
+values across volumes, the result is explicitly labeled as the sum of
+volume-level types; it is not a deduplicated corpus-wide vocabulary count.
+
+### Pending-Volume TSV
+
+Each task writes a pending-volume TSV with this schema:
+
+```text
+htid<TAB>reason_code<TAB>detail
+```
+
+`reason_code` is stable for programmatic grouping. `detail` contains bounded
+human-readable context and is not intended as a stable identifier.
+
+| Reason code | Meaning |
+| --- | --- |
+| `ZIP_NOT_FOUND` | The computed source ZIP path does not exist. |
+| `ZIP_CORRUPT` | Python could not open the input as a valid ZIP archive. |
+| `ZIP_PERMISSION_DENIED` | The process could not access the source ZIP. |
+| `ZIP_READ_ERROR` | Another operating-system ZIP read error occurred. |
+| `ZIP_TOO_LARGE` | The compressed ZIP exceeds the configured size limit. |
+| `NO_TEXT_PAGES` | The ZIP contains no `.txt` page members. |
+| `NO_READABLE_PAGES` | Text page members exist, but all failed during reading. |
+| `NO_TOKENS_FOUND` | Pages were read, but tokenization produced no tokens. |
+| `METADATA_PERMISSION_DENIED` | Bibframe metadata could not be read because of permissions. |
+| `METADATA_ACCESS_ERROR` | Another operating-system metadata access error occurred. |
+| `LOW_LANGUAGE_CONFIDENCE` | Text-based language resolution was not reliable. |
+| `UNSUPPORTED_LANGUAGE` | Metadata or detected language is outside configured support. |
+| `UNSUPPORTED_STANZA_LANGUAGE` | No Stanza mapping exists for the resolved language. |
+| `STANZA_PIPELINE_UNAVAILABLE` | The configured Stanza pipeline could not initialize. |
+| `UNSUPPORTED_STOPWORD_LANGUAGE` | No configured stopword source exists for the language. |
+| `MISSING_DEPENDENCY` | A required Python package is unavailable. |
+| `UNEXPECTED_ERROR` | An uncategorized exception reached the volume boundary. |
 
 ## Published Stopword Information
 
@@ -286,6 +378,7 @@ to missing values.
 data <- read.delim(
   "volume.tsv",
   sep = "\t",
+  quote = "\"",
   fileEncoding = "UTF-8",
   stringsAsFactors = FALSE,
   check.names = FALSE
