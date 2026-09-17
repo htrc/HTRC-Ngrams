@@ -1,4 +1,4 @@
 langid==1.1.6
-nltk==3.9.2
+nltk==3.10.3
 stanza==1.11.0
 stopwordsiso==0.6.1
