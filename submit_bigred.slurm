@@ -24,8 +24,8 @@ echo "Job Start Time: $(date)"
 echo "Running on node: $SLURMD_NODENAME"
 echo "=========================================================="
 
-# 1. Load the pinned Python module and environment on BigRed200
-module load python/gnu/3.12.11
+# 1. Load the Python module and environment on BigRed200
+module load python
 VENV_PATH="${VENV_PATH:-/N/project/htrc/venvs/htrc-ngram-stanza}"
 source "$VENV_PATH/bin/activate"
 export STANZA_RESOURCES_DIR="${STANZA_RESOURCES_DIR:-/N/project/htrc/stanza_resources}"

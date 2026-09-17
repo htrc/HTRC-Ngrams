@@ -246,19 +246,11 @@ Current fields include:
 | `nltk_version` | Installed NLTK package version. |
 | `stopwordsiso_version` | Installed stopwordsiso package version. |
 | `langid_version` | Installed langid package version. |
-| `environment_lock` | Schema version and SHA256 fingerprint of the approved environment lock used by the run. |
 | `filters` | Recorded filter switches and numeric thresholds. |
 | `stanza_models` | Tokenizer and MWT package names and manifest MD5 values. |
 
 The manifest is created with exclusive file creation so concurrent array tasks
 do not write duplicate manifests.
-
-The repository-level `environment.lock.json` is the reproducibility contract
-for the runtime. It pins Python and direct package versions, identifies the
-NLTK stopword corpus by a normalized content checksum, and pins each configured
-Stanza tokenizer and MWT model by package name and MD5. The run provenance JSON
-records the lock's SHA256 fingerprint so a published run can be connected to
-the exact reviewed environment definition.
 
 ## Operational Diagnostics
 

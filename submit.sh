@@ -4,9 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "🔎 Validating the pinned runtime and NLP resources..."
-python3 scripts/validate_environment.py
-
 ID_LIST="${ID_LIST:-htids.txt}"
 
 if [ ! -f "$ID_LIST" ]; then

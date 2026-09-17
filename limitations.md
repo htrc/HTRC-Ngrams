@@ -7,15 +7,15 @@ candidate responses; it does not define automatic correction rules.
 ## Review Scope
 
 The core 20 languages were reviewed on 2026-09-16 with the current
-`tokenize_page()` path, Stanza 1.11.0, and the model packages pinned in
-`environment.lock.json`. The controlled cases covered punctuation, case,
-numbers, apostrophes, inline and line-break hyphens, clitics, diacritics, and
-historical spelling where relevant.
+`tokenize_page()` path and Stanza 1.11.0 resources installed for that review.
+The controlled cases covered punctuation, case, numbers, apostrophes, inline
+and line-break hyphens, clitics, diacritics, and historical spelling where
+relevant.
 
 The evidence levels used below are:
 
-- **Current controlled behavior:** reproduced with the current code and pinned
-  tokenizer resources.
+- **Current controlled behavior:** reproduced with the current code and the
+  tokenizer resources installed for the review.
 - **Legacy volume observation:** seen in earlier HTRC volume exports produced
   before the Stanza migration. These examples remain useful as evidence about
   source OCR, but not as proof of current token boundaries.
@@ -434,8 +434,8 @@ one token containing spaces. For example, `Thư viện` may appear as one token.
 Spaces inside `w1` or `w2` are token content; TSV fields remain separated by
 tabs.
 
-Hindi, Croatian, Turkish, Thai, and Urdu have validated Stanza initialization
-and pinned models, but representative data-quality review remains pending.
+Hindi, Croatian, Turkish, Thai, and Urdu have validated Stanza initialization,
+but representative data-quality review remains pending.
 
 ## Release Follow-Up
 

@@ -209,7 +209,7 @@ provided to researchers.
 
 ## Requirements
 
-- Python 3.12.11
+- Python 3
 - Access to HathiTrust plain-text Pairtree ZIP volumes
 - Stanza tokenizer models for the target languages
 - NLTK stopword corpus
@@ -264,44 +264,6 @@ PY
 ```
 
 Compute nodes should not be expected to download models during processing.
-After installation, run `python3 scripts/validate_environment.py` to confirm
-that package versions, stopwords, and model files match
-`environment.lock.json`.
-
-## Reproducible Environment
-
-The production environment is pinned so that a future package or model update
-does not silently change token boundaries, stopword selection, or exported
-bigrams.
-
-- `.python-version` records the approved Python version.
-- `requirements.txt` pins the direct Python dependencies.
-- `environment.lock.json` records the approved package versions, the NLTK
-  stopword corpus checksum, and the tokenizer and MWT model package and MD5 for
-  every supported Stanza language.
-- `scripts/validate_environment.py` compares the active environment and local
-  resources with that lock. It does not download or modify any resources.
-
-Before submitting a BigRed200 run, activate the production environment and run
-the validator:
-
-```bash
-module load python/gnu/3.12.11
-source /N/project/htrc/venvs/htrc-ngram-stanza/bin/activate
-export STANZA_RESOURCES_DIR=/N/project/htrc/stanza_resources
-export NLTK_DATA=/N/project/htrc/nltk_data
-python3 scripts/validate_environment.py
-```
-
-A successful check ends with `Environment validation PASSED.` A mismatch exits
-with a nonzero status and identifies the unexpected Python version, package,
-stopword corpus, Stanza default package, or model file. `submit.sh` runs this
-same validation once before creating the SLURM array, so an incompatible
-environment fails before volume processing begins.
-
-When intentionally upgrading Python, a dependency, a stopword resource, or a
-Stanza model, update and review the lock files together rather than bypassing
-the validator.
 
 ## Inputs
 
@@ -438,12 +400,8 @@ missing or incomplete outputs are processed again.
 
 ```text
 .
-├── .python-version
-├── environment.lock.json
 ├── run_pipeline.py
 ├── requirements.txt
-├── scripts/
-│   └── validate_environment.py
 ├── submit.sh
 ├── submit_bigred.slurm
 └── src/

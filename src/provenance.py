@@ -2,7 +2,6 @@ import os
 import json
 import sys
 import subprocess
-import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,32 +32,6 @@ def get_package_version(pkg_name: str) -> str:
         return importlib_metadata.version(pkg_name)
     except Exception:
         return "unknown"
-
-
-def get_environment_lock_metadata() -> dict:
-    lock_path = Path(__file__).resolve().parents[1] / "environment.lock.json"
-    if not lock_path.is_file():
-        return {
-            "status": "unavailable",
-            "path": "environment.lock.json",
-            "error": "Environment lock file not found.",
-        }
-
-    try:
-        lock_bytes = lock_path.read_bytes()
-        lock_data = json.loads(lock_bytes.decode("utf-8"))
-        return {
-            "status": "available",
-            "path": "environment.lock.json",
-            "schema_version": lock_data.get("schema_version", "unknown"),
-            "sha256": hashlib.sha256(lock_bytes).hexdigest(),
-        }
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        return {
-            "status": "unavailable",
-            "path": "environment.lock.json",
-            "error": str(error),
-        }
 
 
 def get_stanza_model_metadata(stanza_resources_dir: Path) -> dict:
@@ -143,7 +116,6 @@ def generate_run_provenance(
         "nltk_version": get_package_version("nltk"),
         "stopwordsiso_version": get_package_version("stopwordsiso"),
         "langid_version": get_package_version("langid"),
-        "environment_lock": get_environment_lock_metadata(),
         "filters": {
             "filter_1": enable_f1,
             "filter_2": enable_f2,
