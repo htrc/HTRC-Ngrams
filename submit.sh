@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 ID_LIST="${ID_LIST:-htids.txt}"
+RUN_ROOT="${RUN_ROOT:-runs/current_run}"
+PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
 
 if [ ! -f "$ID_LIST" ]; then
     echo "❌ HTID list not found: $ID_LIST"
@@ -28,5 +30,18 @@ fi
 
 echo "📦 Submitting $N volume(s) across $((ARRAY_MAX+1)) task(s)..."
 mkdir -p logs
-sbatch --export=ALL,ID_LIST="$ID_LIST" --array=0-$ARRAY_MAX submit_bigred.slurm
+ARRAY_SUBMISSION=$(sbatch --parsable \
+    --export=ALL,ID_LIST="$ID_LIST",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR" \
+    --array=0-$ARRAY_MAX \
+    submit_bigred.slurm)
+ARRAY_JOB_ID=${ARRAY_SUBMISSION%%;*}
+echo "✅ Array job: $ARRAY_JOB_ID"
+
+CONSOLIDATION_SUBMISSION=$(sbatch --parsable \
+    --dependency=afterok:"$ARRAY_JOB_ID" \
+    --export=ALL,PENDING_DIR="$PENDING_DIR",PENDING_RUN_ID="slurm_$ARRAY_JOB_ID" \
+    consolidate_pending.slurm)
+CONSOLIDATION_JOB_ID=${CONSOLIDATION_SUBMISSION%%;*}
+
+echo "✅ Pending consolidation job: $CONSOLIDATION_JOB_ID"
 echo "✅ Monitor with: squeue -u $USER"

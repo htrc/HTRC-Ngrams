@@ -120,6 +120,7 @@ def generate_run_provenance(
             "filter_1": enable_f1,
             "filter_2": enable_f2,
             "filter_3": enable_f3,
+            "filter_4": False,
             "min_frequency": min_freq,
             "min_pmi": min_pmi,
         },

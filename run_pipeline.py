@@ -254,20 +254,22 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
     original_total_bigrams = sum(bigram_counts.values())
 
     # --- APPLY FILTER 1 ---
-    stopword_meta = get_stopword_metadata(lang)
+    stopword_meta = {"source": "", "list_code": ""}
     dropped_f1 = Counter()
     selected_stopwords = set()
     top25_with_counts = {}
-
-    top25_dir = audit_dir / "top25_stopwords"
-    dropped_dir = audit_dir / "top25_dropped_bigrams"
-    top25_dir.mkdir(parents=True, exist_ok=True)
-    dropped_dir.mkdir(parents=True, exist_ok=True)
-    clean_htid = htid.replace('/', '_').replace(':', '_')
-    top25_file_path = str(top25_dir / f"{clean_htid}_top25.txt")
-    dropped_file_path = str(dropped_dir / f"{clean_htid}_dropped.tsv")
+    top25_file_path = ""
+    dropped_file_path = ""
 
     if enable_f1:
+        stopword_meta = get_stopword_metadata(lang)
+        top25_dir = audit_dir / "top25_stopwords"
+        dropped_dir = audit_dir / "top25_dropped_bigrams"
+        top25_dir.mkdir(parents=True, exist_ok=True)
+        dropped_dir.mkdir(parents=True, exist_ok=True)
+        clean_htid = htid.replace('/', '_').replace(':', '_')
+        top25_file_path = str(top25_dir / f"{clean_htid}_top25.txt")
+        dropped_file_path = str(dropped_dir / f"{clean_htid}_dropped.tsv")
         original_bigram_count = len(bigram_counts)
         selected_stopwords, top25_with_counts = select_top_standard_stopwords(unigram_counts, lang, top_n=25)
         bigram_counts, dropped_f1 = filter_1_standard_stopword_bigrams(bigram_counts, selected_stopwords)
@@ -361,8 +363,8 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
         'filter_2_enabled':     enable_f2,
         'filter_3_enabled':     enable_f3,
         'output_file':          str(tsv_path),
-        'top25_stopword_file':  top25_file_path if enable_f1 else "",
-        'dropped_bigram_file':  dropped_file_path if enable_f1 else "",
+        'top25_stopword_file':  top25_file_path,
+        'dropped_bigram_file':  dropped_file_path,
         'total_pages':          page_count,
         'source_text_pages':    read_stats.total_page_files,
         'failed_pages':         read_stats.failed_pages,
@@ -479,9 +481,9 @@ def main():
     parser.add_argument("--max-exposure", type=float, default=0.15, help="Maximum token exposure ratio for Filter 4 (default: 0.15)")
     parser.add_argument("--max-zip-size-mb", type=float, default=150.0, help="Skip source ZIP files larger than this many MiB (default: 150)")
     parser.add_argument("--flat-output", action="store_true", help="Save TSV files in one flat directory (not recommended for more than 1 million volumes)")
-    parser.add_argument("--filter1", action=argparse.BooleanOptionalAction, default=True, help="Enable Filter 1 (Standard Stopwords)")
-    parser.add_argument("--filter2", action=argparse.BooleanOptionalAction, default=True, help="Enable Filter 2 (Min Frequency)")
-    parser.add_argument("--filter3", action=argparse.BooleanOptionalAction, default=True, help="Enable Filter 3 (PMI)")
+    parser.add_argument("--filter1", action=argparse.BooleanOptionalAction, default=False, help="Enable Filter 1 (Standard Stopwords)")
+    parser.add_argument("--filter2", action=argparse.BooleanOptionalAction, default=False, help="Enable Filter 2 (Min Frequency)")
+    parser.add_argument("--filter3", action=argparse.BooleanOptionalAction, default=False, help="Enable Filter 3 (PMI)")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory to save volume TSVs and run_metadata.json")
     parser.add_argument("--audit-dir", type=Path, required=True, help="Directory to save audit files (e.g., dropped bigrams)")
     parser.add_argument("--metadata-dir", type=Path, required=True, help="Directory to save global run provenance metadata")
@@ -542,6 +544,7 @@ def main():
         "filter_1_enabled": args.filter1,
         "filter_2_enabled": args.filter2,
         "filter_3_enabled": args.filter3,
+        "filter_4_enabled": False,
         "flat_output": args.flat_output,
         "pairtree_root": str(pairtree_root.resolve()),
         "bibframe_root": str(ef_root.resolve()) if ef_root is not None else None,

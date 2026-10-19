@@ -11,8 +11,8 @@ The pipeline combines:
 - multilingual tokenization with Stanford Stanza;
 - page-level text cleanup;
 - unigram and bigram counting;
-- three runtime-selectable filtering operations;
-- per-volume stopword audit files;
+- four documented filtering operations, all disabled for the unfiltered export;
+- optional per-volume stopword audit files when Filter 1 is enabled;
 - run-level provenance metadata; and
 - checkpointed TSV export.
 
@@ -39,8 +39,8 @@ For each HTID, the pipeline:
     available, MWT processor.
 11. Counts case-sensitive unigrams and adjacent bigrams within that page.
 12. Applies the configured filters.
-13. Writes the volume TSV, stopword audit files, result metadata, and run
-    provenance.
+13. Writes the volume TSV, result metadata, and run provenance. Stopword audit
+    files are written only when Filter 1 is enabled.
 
 Pages are processed independently. Bigrams do not cross page boundaries.
 
@@ -127,23 +127,21 @@ documented in [`limitations.md`](limitations.md).
 
 ## Filtering
 
-The execution path provides three selectable filters. Their enabled states and
-thresholds are recorded in `run_metadata.json` and run provenance so that an
-export can be interpreted and reproduced.
+The execution path provides three selectable filters and retains an
+experimental Filter 4 helper. Their states and thresholds are recorded in
+`run_metadata.json` and run provenance so that an export can be interpreted.
 
 ### Filter Policy Status
 
-The current release-candidate policy applies Filters 1, 2, and 3 in that order,
-using `min_freq=2` and `min_pmi=0.0`. The command-line defaults and BigRed200
-wrapper implement that combination. This is the repository's working policy
-while final red-team confirmation is pending; if the decision changes, the
-filter switches, metadata, and documentation must be updated together.
+The confirmed export policy is unfiltered. Filters 1, 2, 3, and 4 are disabled.
+The command-line defaults and BigRed200 wrapper both implement this policy.
+Unfiltered TSVs contain every distinct bigram produced by the preprocessing and
+tokenization path, with its original volume-level frequency.
 
 Filter 4 remains an experimental helper in `engine_filters.py`, but the current
 `run_pipeline.py` execution path does not call it. Consequently,
-`--max-exposure` is currently a recorded compatibility parameter and does not
-alter exported rows. It is not part of the release-candidate policy and must
-not be described as an active protection.
+`--max-exposure` is a recorded compatibility parameter and does not alter
+exported rows. It must not be described as an active protection.
 
 ### Filter 1: Standard Stopword Bigrams
 
@@ -199,10 +197,11 @@ team decision is required before it is either integrated or removed.
 ## Generated Files
 
 The primary output is one volume-level bigram TSV per successfully processed
-HTID. Operational deployments can also create internal result summaries,
-provenance manifests, stopword audit files, pending-volume records, and
-scheduler logs. These supporting files are intended for pipeline operation and
-review and do not all need to be distributed with the research dataset.
+HTID. Operational deployments also create internal result summaries,
+provenance manifests, pending-volume records, and scheduler logs. Stopword
+audit files are created only if Filter 1 is enabled. These supporting files are
+intended for pipeline operation and review and do not all need to be
+distributed with the research dataset.
 
 See [`README_EXPORT.md`](README_EXPORT.md) for the files and fields that may be
 provided to researchers.
@@ -308,9 +307,9 @@ python3 run_pipeline.py \
   --max-zip-size-mb 150 \
   --min-freq 2 \
   --min-pmi 0.0 \
-  --filter1 \
-  --filter2 \
-  --filter3
+  --no-filter1 \
+  --no-filter2 \
+  --no-filter3
 ```
 
 ### Arguments
@@ -325,9 +324,9 @@ python3 run_pipeline.py \
 | `--metadata-dir` | Yes | Directory to save global run provenance metadata. |
 | `--summary-dir` | No | Base directory for task-sharded summary CSV files. Defaults under `--output-dir`. |
 | `--pending-dir` | No | Base directory for task-sharded pending-volume files. Defaults under `--output-dir`. |
-| `--filter1` / `--no-filter1` | No | Enable/disable Filter 1 (Standard Stopwords). Default: enabled. |
-| `--filter2` / `--no-filter2` | No | Enable/disable Filter 2 (Min Frequency). Default: enabled. |
-| `--filter3` / `--no-filter3` | No | Enable/disable Filter 3 (PMI). Default: enabled. |
+| `--filter1` / `--no-filter1` | No | Enable/disable Filter 1 (Standard Stopwords). Default: disabled. |
+| `--filter2` / `--no-filter2` | No | Enable/disable Filter 2 (Min Frequency). Default: disabled. |
+| `--filter3` / `--no-filter3` | No | Enable/disable Filter 3 (PMI). Default: disabled. |
 | `--min-freq` | No | Minimum frequency supplied to Filter 2. |
 | `--min-pmi` | No | Minimum PMI supplied to Filter 3. |
 | `--max-exposure` | No | Compatibility parameter for the experimental Filter 4 helper. It is recorded but does not currently alter output. |
@@ -343,7 +342,9 @@ submission to override a default without editing the script.
 ## SLURM Execution
 
 `submit.sh` counts nonempty HTIDs and submits a SLURM array through
-`submit_bigred.slurm`.
+`submit_bigred.slurm`. It also submits a small dependent job through
+`consolidate_pending.slurm` to merge task-level pending records after every
+array task finishes successfully.
 
 ```bash
 mkdir -p logs
@@ -367,18 +368,29 @@ The pipeline is designed to resume after a cancelled job or node failure.
 Completed TSVs with a recognized header and final newline are checkpointed and
 skipped. An existing incomplete TSV is replaced through the atomic export path.
 
-Each array task writes a pending-volume TSV containing `htid`, `reason_code`,
-and `detail`. Review the reason codes before retrying: missing source data and
-unsupported languages will normally fail again, while corrected permissions,
-dependencies, resources, or transient read problems may be retryable.
+Each array task first writes an internal pending-volume shard containing
+`htid`, `reason_code`, and `detail`. After every array task finishes
+successfully, the dependent consolidation job atomically writes one final file
+and removes that run's shards:
 
-To collect all pending HTIDs from one run:
+```text
+<pending-dir>/pending_volumes.tsv
+```
+
+The final file contains a header even when no volumes remain pending. It lists
+volume-level failures reported by the pipeline. If an array task is cancelled
+or fails at the scheduler level, consolidation does not run; this prevents an
+incomplete set of shards from replacing the previous final pending file.
+
+Review the reason codes before retrying. Missing source data and unsupported
+languages will normally fail again, while corrected permissions, dependencies,
+resources, or transient read problems may be retryable. Create a one-HTID-per-
+line retry list from the final file:
 
 ```bash
-find runs/current_run/pending/slurm_<job_id> \
-  -type f -name 'task_*.tsv' -print0 \
-  | xargs -0 awk -F '\t' 'FNR > 1 {print $1}' \
-  | sort -u > htids_retry.txt
+awk -F '\t' 'NR > 1 {print $1}' \
+  runs/current_run/pending/pending_volumes.tsv \
+  > htids_retry.txt
 ```
 
 Inspect `reason_code` and `detail`, correct the underlying problem, then submit
@@ -392,6 +404,12 @@ Existing completed volumes will be skipped. A retry with changed filters or
 thresholds must use a new output directory because `run_metadata.json`
 intentionally rejects configuration conflicts.
 
+When the retry uses the same `PENDING_DIR`, its consolidation job replaces
+`pending_volumes.tsv` with only the volumes that still fail. Volumes that
+succeed on retry therefore disappear from the final pending file. Do not run
+overlapping submissions against the same `RUN_ROOT`; use a separate run root
+for concurrent submissions.
+
 For a cancelled array where no configuration changed, resubmitting the
 original HTID list is also safe: completed TSVs are checkpointed and only
 missing or incomplete outputs are processed again.
@@ -404,6 +422,9 @@ missing or incomplete outputs are processed again.
 ├── requirements.txt
 ├── submit.sh
 ├── submit_bigred.slurm
+├── consolidate_pending.slurm
+├── scripts/
+│   └── consolidate_pending.py
 └── src/
     ├── config.py
     ├── engine_export.py
@@ -417,7 +438,7 @@ missing or incomplete outputs are processed again.
 ## Operational Notes
 
 - **Atomic Writes:** Volume TSVs are written to a `.tmp` file first and then atomically renamed to `.tsv` to reduce the risk of data corruption even if a node crashes mid-write.
-- **Lockless Chunking:** Results and pending volume logs are not written to shared files. Each SLURM array task writes its own file beneath the configured summary and pending directories (for example, `<summary-dir>/<run_id>/task_0001.csv`). This is a shared-nothing architecture designed specifically for Lustre filesystems such as BigRed200. Merge these files downstream if a single metadata log is required.
+- **Lockless Chunking:** Array tasks do not write concurrently to a shared metadata file. Each task writes its own result and pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Result summaries remain task-sharded.
 - **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that your filter configuration exactly matches the existing files. If you change a parameter (like `--min-freq`), the pipeline will abort to prevent silent data corruption.
 - **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, oversized, and permission-restricted inputs from language, dependency, and tokenizer failures.
 - **Page Diagnostics:** Task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks. Up to five page examples are printed in the task log for each warning category.

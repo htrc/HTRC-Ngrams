@@ -7,8 +7,8 @@ that may be distributed to researchers.
 
 Each TSV contains aggregated bigram types from one HathiTrust volume. It does
 not contain page numbers, token positions, sentence identifiers, or the
-original page text. Published provenance and stopword information provide
-context for how the TSV was created.
+original page text. Published provenance provides context for how the TSV was
+created. Stopword audit information exists only for runs that enable Filter 1.
 
 ## Bigram TSV
 
@@ -169,10 +169,9 @@ Interpret it together with `freq`.
 
 ## Filters
 
-The current release-candidate policy applies Filters 1, 2, and 3 in order, with
-`min_freq=2` and `min_pmi=0.0`. Final red-team confirmation is pending, so the
-run provenance and `run_metadata.json` remain the authoritative record for a
-specific export.
+The confirmed export policy is unfiltered. Filters 1, 2, 3, and 4 are disabled,
+so the production TSV uses the three-column `w1`, `w2`, `freq` schema. Run
+provenance and `run_metadata.json` record these states for each execution.
 
 The filtering module also contains an experimental Filter 4 helper, but
 `run_pipeline.py` does not call it and it does not alter exported rows.
@@ -217,8 +216,8 @@ next row would exceed the budget. The reported exposure is:
 2 * retained bigram occurrences / total_tokens
 ```
 
-This describes the unused helper only. Filter 4 is not part of the current
-release-candidate policy and provides no reconstruction guarantee.
+This describes the unused helper only. Filter 4 is disabled and provides no
+reconstruction guarantee.
 
 ## Row Ordering
 
@@ -286,7 +285,15 @@ volume-level types; it is not a deduplicated corpus-wide vocabulary count.
 
 ### Pending-Volume TSV
 
-Each task writes a pending-volume TSV with this schema:
+Array tasks write temporary shards during processing. After every SLURM array
+task finishes successfully, a dependent consolidation job writes one final
+file:
+
+```text
+pending/pending_volumes.tsv
+```
+
+The final file uses this schema:
 
 ```text
 htid<TAB>reason_code<TAB>detail
@@ -294,6 +301,11 @@ htid<TAB>reason_code<TAB>detail
 
 `reason_code` is stable for programmatic grouping. `detail` contains bounded
 human-readable context and is not intended as a stable identifier.
+
+The consolidation step deduplicates by HTID, atomically replaces the previous
+final file, and removes the completed run's temporary pending shards. After a
+retry, the final file therefore contains only volumes that remain pending in
+that retry. Concurrent runs should use different pending directories.
 
 | Reason code | Meaning |
 | --- | --- |
@@ -315,7 +327,11 @@ human-readable context and is not intended as a stable identifier.
 | `MISSING_DEPENDENCY` | A required Python package is unavailable. |
 | `UNEXPECTED_ERROR` | An uncategorized exception reached the volume boundary. |
 
-## Published Stopword Information
+## Optional Stopword Audit Information
+
+The unfiltered export does not generate stopword audit files. If Filter 1 is
+enabled for an experimental run, the following file is created for each
+processed volume.
 
 ### Selected Stopwords
 
@@ -423,5 +439,5 @@ language models, and filtering choices. They may contain:
   analysis.
 
 Historical spelling and specialized vocabulary are not automatically errors.
-Researchers should review frequency, PMI, provenance, selected stopwords, and
-the documented language limitations together.
+Researchers should review frequency, optional PMI, provenance, optional
+stopword audits, and the documented language limitations together.

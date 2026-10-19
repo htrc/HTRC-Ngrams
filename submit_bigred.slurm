@@ -67,9 +67,9 @@ python3 -u run_pipeline.py \
     --min-freq 2 \
     --min-pmi 0.0 \
     --max-exposure 0.15 \
-    --filter1 \
-    --filter2 \
-    --filter3 \
+    --no-filter1 \
+    --no-filter2 \
+    --no-filter3 \
     --flat-output
 
 echo "=========================================================="
