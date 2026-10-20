@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
-#SBATCH --time=04:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --partition=general
 #SBATCH --mail-type=END,FAIL
 #SBATCH --output=logs/ngrams_%A_%a.out
@@ -41,12 +41,13 @@ BIBFRAME_ROOT="${BIBFRAME_ROOT:-/N/project/htrc/extracted-features/data/bibframe
 
 # This text file must be in the same folder as this script, containing your IDs
 ID_LIST="${ID_LIST:-htids.txt}"
-RUN_ROOT="${RUN_ROOT:-runs/current_run}"
+RUN_ROOT="${RUN_ROOT:-outputs/current_run}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-$RUN_ROOT/bigrams}"
 AUDIT_DIR="${AUDIT_DIR:-$RUN_ROOT/audit}"
 METADATA_DIR="${METADATA_DIR:-$RUN_ROOT/metadata}"
-SUMMARY_DIR="${SUMMARY_DIR:-$RUN_ROOT/summaries}"
+# SUMMARY_DIR="${SUMMARY_DIR:-$RUN_ROOT/summaries}"
+# Summary CSV export is disabled by omitting --summary-dir below.
 PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
 MAX_ZIP_SIZE_MB="${MAX_ZIP_SIZE_MB:-150}"
 
@@ -61,7 +62,6 @@ python3 -u run_pipeline.py \
     --output-dir "$OUTPUT_DIR" \
     --audit-dir "$AUDIT_DIR" \
     --metadata-dir "$METADATA_DIR" \
-    --summary-dir "$SUMMARY_DIR" \
     --pending-dir "$PENDING_DIR" \
     --max-zip-size-mb "$MAX_ZIP_SIZE_MB" \
     --min-freq 2 \
@@ -69,8 +69,9 @@ python3 -u run_pipeline.py \
     --max-exposure 0.15 \
     --no-filter1 \
     --no-filter2 \
-    --no-filter3 \
-    --flat-output
+    --no-filter3
+
+# Pairtree output is the default. Do not pass --flat-output for production.
 
 echo "=========================================================="
 echo "Job End Time: $(date)"

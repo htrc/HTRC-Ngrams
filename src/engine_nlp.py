@@ -53,6 +53,8 @@ LANGUAGE_ALIASES = {
     "fra": "fra",
     "ces": "cze",
     "cze": "cze",
+    "scr": "hrv",
+    "hrv": "hrv",
 }
 
 

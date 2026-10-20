@@ -14,6 +14,7 @@ STOPWORD_LANGUAGE_ALIASES = {
     "fre": "fra",
     "chi": "zho",
     "ces": "cze",
+    "scr": "hrv",
 }
 
 

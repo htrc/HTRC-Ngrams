@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 ID_LIST="${ID_LIST:-htids.txt}"
-RUN_ROOT="${RUN_ROOT:-runs/current_run}"
+RUN_ROOT="${RUN_ROOT:-outputs/current_run}"
 PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
 
 if [ ! -f "$ID_LIST" ]; then

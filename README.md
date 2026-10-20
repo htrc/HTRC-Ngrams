@@ -48,11 +48,11 @@ Pages are processed independently. Bigrams do not cross page boundaries.
 
 The pipeline uses three-letter language-profile codes internally. Source
 metadata codes are normalized to these configured profiles when necessary.
-The aliases `chi`/`zho`, `ger`/`deu`, `fre`/`fra`, and `ces`/`cze` resolve to
-one canonical internal profile. A metadata language outside the configured
-profiles is recorded with reason code `UNSUPPORTED_LANGUAGE`; the unsupported
-code is retained in the detail field instead of being routed through a generic
-Latin fallback.
+The aliases `chi`/`zho`, `ger`/`deu`, `fre`/`fra`, `ces`/`cze`, and
+`scr`/`hrv` resolve to one canonical internal profile. A metadata language
+outside the configured profiles is recorded with reason code
+`UNSUPPORTED_LANGUAGE`; the unsupported code is retained in the detail field
+instead of being routed through a generic Latin fallback.
 
 | Language | Profile code | Stanza code | Stopword source |
 | --- | --- | --- | --- |
@@ -84,8 +84,8 @@ Latin fallback.
 | Vietnamese | `vie` | `vi` | stopwords-iso |
 | Urdu | `urd` | `ur` | stopwords-iso |
 
-The aliases `ger`, `fre`, `chi`, and `ces` are normalized to the corresponding
-configured profiles.
+The aliases `ger`, `fre`, `chi`, `ces`, and `scr` are normalized to the
+corresponding configured profiles.
 
 ## Tokenization
 
@@ -197,9 +197,10 @@ team decision is required before it is either integrated or removed.
 ## Generated Files
 
 The primary output is one volume-level bigram TSV per successfully processed
-HTID. Operational deployments also create internal result summaries,
-provenance manifests, pending-volume records, and scheduler logs. Stopword
-audit files are created only if Filter 1 is enabled. These supporting files are
+HTID. Operational deployments also create provenance manifests,
+pending-volume records, and scheduler logs. Optional task-sharded result
+summaries are written only when `--summary-dir` is supplied. Stopword audit
+files are created only if Filter 1 is enabled. These supporting files are
 intended for pipeline operation and review and do not all need to be
 distributed with the research dataset.
 
@@ -302,7 +303,6 @@ python3 run_pipeline.py \
   --output-dir /path/to/output \
   --audit-dir /path/to/audit \
   --metadata-dir /path/to/metadata \
-  --summary-dir /path/to/summaries \
   --pending-dir /path/to/pending \
   --max-zip-size-mb 150 \
   --min-freq 2 \
@@ -320,9 +320,9 @@ python3 run_pipeline.py \
 | `--id-list` | Yes | UTF-8 text file containing one HTID per line. |
 | `--bibframe-root` | No | Root containing HTRC Bibframe JSON-LD metadata. If omitted, language resolution uses text fallback. |
 | `--output-dir` | Yes | Directory to save volume TSVs and `run_metadata.json`. |
-| `--audit-dir` | Yes | Directory to save audit files (e.g., dropped bigrams). |
+| `--audit-dir` | Yes | Directory to save Filter 1 audit files. The directory is created only when Filter 1 is enabled. |
 | `--metadata-dir` | Yes | Directory to save global run provenance metadata. |
-| `--summary-dir` | No | Base directory for task-sharded summary CSV files. Defaults under `--output-dir`. |
+| `--summary-dir` | No | Enables task-sharded summary CSV files in the specified directory. If omitted, no summary CSV files are written. |
 | `--pending-dir` | No | Base directory for task-sharded pending-volume files. Defaults under `--output-dir`. |
 | `--filter1` / `--no-filter1` | No | Enable/disable Filter 1 (Standard Stopwords). Default: disabled. |
 | `--filter2` / `--no-filter2` | No | Enable/disable Filter 2 (Min Frequency). Default: disabled. |
@@ -336,7 +336,7 @@ python3 run_pipeline.py \
 The SLURM wrapper provides deployment defaults through environment variables.
 Set `VENV_PATH`, `STANZA_RESOURCES_DIR`, `NLTK_DATA`, `PAIRTREE_ROOT`,
 `BIBFRAME_ROOT`, `ID_LIST`, `RUN_ROOT`, `OUTPUT_DIR`, `AUDIT_DIR`,
-`METADATA_DIR`, `SUMMARY_DIR`, `PENDING_DIR`, or `MAX_ZIP_SIZE_MB` before
+`METADATA_DIR`, `PENDING_DIR`, or `MAX_ZIP_SIZE_MB` before
 submission to override a default without editing the script.
 
 ## SLURM Execution
@@ -389,7 +389,7 @@ line retry list from the final file:
 
 ```bash
 awk -F '\t' 'NR > 1 {print $1}' \
-  runs/current_run/pending/pending_volumes.tsv \
+  outputs/current_run/pending/pending_volumes.tsv \
   > htids_retry.txt
 ```
 
@@ -438,11 +438,11 @@ missing or incomplete outputs are processed again.
 ## Operational Notes
 
 - **Atomic Writes:** Volume TSVs are written to a `.tmp` file first and then atomically renamed to `.tsv` to reduce the risk of data corruption even if a node crashes mid-write.
-- **Lockless Chunking:** Array tasks do not write concurrently to a shared metadata file. Each task writes its own result and pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Result summaries remain task-sharded.
+- **Lockless Chunking:** Array tasks do not write concurrently to a shared pending file. Each task writes its own pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Optional result summaries remain task-sharded when enabled.
 - **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that your filter configuration exactly matches the existing files. If you change a parameter (like `--min-freq`), the pipeline will abort to prevent silent data corruption.
 - **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, oversized, and permission-restricted inputs from language, dependency, and tokenizer failures.
-- **Page Diagnostics:** Task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks. Up to five page examples are printed in the task log for each warning category.
-- **Output Metrics:** Task result CSVs distinguish total tokens, retained distinct bigram types, retained bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
+- **Page Diagnostics:** Up to five page examples are printed in the task log for each warning category. Optional task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks when `--summary-dir` is supplied.
+- **Output Metrics:** Optional task result CSVs distinguish total tokens, retained distinct bigram types, retained bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
 - Pairtree ZIPs are streamed page by page rather than loaded as one volume.
 - Stanza pipelines are lazily initialized and cached once per worker process.
 - The configured ZIP-size guard skips compressed input files above the deployment threshold.

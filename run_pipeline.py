@@ -3,6 +3,7 @@ import csv
 import os
 import time
 import itertools
+from contextlib import ExitStack
 from pathlib import Path
 from collections import Counter
 from multiprocessing import Pool
@@ -487,8 +488,8 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory to save volume TSVs and run_metadata.json")
     parser.add_argument("--audit-dir", type=Path, required=True, help="Directory to save audit files (e.g., dropped bigrams)")
     parser.add_argument("--metadata-dir", type=Path, required=True, help="Directory to save global run provenance metadata")
-    parser.add_argument("--summary-dir", type=Path, help="Directory for task-sharded summary CSV files (default: <output-dir>/runs/<run-id>/results)")
-    parser.add_argument("--pending-dir", type=Path, help="Directory for task-sharded pending-volume files (default: <output-dir>/runs/<run-id>/pending)")
+    parser.add_argument("--summary-dir", type=Path, help="Optional directory for task-sharded summary CSV files. If omitted, summary CSV files are not written.")
+    parser.add_argument("--pending-dir", type=Path, help="Directory for task-sharded pending-volume files (default: <output-dir>/task_logs/<run-id>/pending)")
     args = parser.parse_args()
 
     if args.min_freq < 1:
@@ -525,7 +526,8 @@ def main():
         print("Bibframe metadata root: not configured; language detection will use text fallback")
 
     export_dir.mkdir(parents=True, exist_ok=True)
-    audit_dir.mkdir(parents=True, exist_ok=True)
+    if args.filter1:
+        audit_dir.mkdir(parents=True, exist_ok=True)
     metadata_dir.mkdir(parents=True, exist_ok=True)
     if summary_root is not None:
         summary_root.mkdir(parents=True, exist_ok=True)
@@ -634,27 +636,36 @@ def main():
     # Build argument tuples for unordered worker processing
     task_args = [(htid, pairtree_root, ef_root, export_dir, audit_dir, args.filter1, args.filter2, args.filter3, args.min_freq, args.min_pmi, args.max_exposure, args.max_zip_size_mb, args.flat_output) for htid in my_htids]
 
-    # Task-Level Chunked Output
-    task_logs_dir = export_dir / "runs" / run_id
-    results_dir = summary_root / run_id if summary_root is not None else task_logs_dir / "results"
+    # Task-level pending records and optional summary output
+    task_logs_dir = export_dir / "task_logs" / run_id
+    results_dir = summary_root / run_id if summary_root is not None else None
     pending_dir = pending_root / run_id if pending_root is not None else task_logs_dir / "pending"
-    results_dir.mkdir(parents=True, exist_ok=True)
+    if results_dir is not None:
+        results_dir.mkdir(parents=True, exist_ok=True)
     pending_dir.mkdir(parents=True, exist_ok=True)
 
-    success_csv_path = results_dir / f"task_{task_id:04d}.csv"
+    success_csv_path = (
+        results_dir / f"task_{task_id:04d}.csv"
+        if results_dir is not None
+        else None
+    )
     pending_tsv_path = pending_dir / f"task_{task_id:04d}.tsv"
 
-    repair_truncated_log(success_csv_path)
+    if success_csv_path is not None:
+        repair_truncated_log(success_csv_path)
     repair_truncated_log(pending_tsv_path)
 
     file_is_new = (
-        not success_csv_path.exists()
-        or success_csv_path.stat().st_size == 0
+        success_csv_path is not None
+        and (
+            not success_csv_path.exists()
+            or success_csv_path.stat().st_size == 0
+        )
     )
 
     existing_result_htids = set()
 
-    if not file_is_new:
+    if success_csv_path is not None and not file_is_new:
         with open(
             success_csv_path,
             "r",
@@ -709,19 +720,24 @@ def main():
     sum_singleton_percentage = 0
     sum_tsv_size_bytes = 0
 
-    with open(
-        success_csv_path, "a", newline="", encoding="utf-8"
-    ) as success_f, open(
-        pending_tsv_path, "a", newline="", encoding="utf-8"
-    ) as pending_f:
-        success_writer = csv.DictWriter(
-            success_f,
-            fieldnames=RESULT_FIELDS,
-            extrasaction="raise",
-        )
-        if file_is_new:
-            success_writer.writeheader()
+    with ExitStack() as stack:
+        success_f = None
+        success_writer = None
+        if success_csv_path is not None:
+            success_f = stack.enter_context(
+                open(success_csv_path, "a", newline="", encoding="utf-8")
+            )
+            success_writer = csv.DictWriter(
+                success_f,
+                fieldnames=RESULT_FIELDS,
+                extrasaction="raise",
+            )
+            if file_is_new:
+                success_writer.writeheader()
 
+        pending_f = stack.enter_context(
+            open(pending_tsv_path, "a", newline="", encoding="utf-8")
+        )
         pending_writer = csv.DictWriter(
             pending_f,
             fieldnames=PENDING_FIELDS,
@@ -744,18 +760,20 @@ def main():
 
                     htid = data["htid"]
 
-                    if htid in existing_result_htids:
+                    if (
+                        success_writer is not None
+                        and htid in existing_result_htids
+                    ):
                         print(f"  Metadata already recorded for {htid}; skipping duplicate row.")
                         continue
 
-                    success_writer.writerow({
-                        field: data.get(field, "")
-                        for field in RESULT_FIELDS
-                    })
-                    success_f.flush()
-
-
-                    existing_result_htids.add(htid)
+                    if success_writer is not None:
+                        success_writer.writerow({
+                            field: data.get(field, "")
+                            for field in RESULT_FIELDS
+                        })
+                        success_f.flush()
+                        existing_result_htids.add(htid)
                     result_count += 1
 
                     if data["record_status"] == "checkpointed_existing":
@@ -807,7 +825,7 @@ def main():
     print(f"  Existing checkpointed volumes: {checkpoint_count}")
     print(f"  Pending or failed volumes: {pending_count}")
 
-    if result_count > 0:
+    if result_count > 0 and success_csv_path is not None:
         print(f"  Result metadata: {success_csv_path}")
 
     if pending_count > 0:
