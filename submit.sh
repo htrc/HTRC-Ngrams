@@ -20,8 +20,9 @@ if [ "$N" -eq 0 ]; then
     exit 1
 fi
 
-# Cap array tasks at 1000 to prevent SLURM rejection on massive runs
-MAX_TASKS=1000
+# Use 300 array tasks for the current throughput test. Override with the
+# MAX_TASKS environment variable for later runs.
+MAX_TASKS="${MAX_TASKS:-300}"
 if [ "$N" -lt "$MAX_TASKS" ]; then
     ARRAY_MAX=$((N-1))
 else
