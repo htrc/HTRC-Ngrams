@@ -8,7 +8,7 @@ that may be distributed to researchers.
 Each TSV contains aggregated bigram types from one HathiTrust volume. It does
 not contain page numbers, token positions, sentence identifiers, or the
 original page text. Published provenance provides context for how the TSV was
-created. Stopword audit information exists only for runs that enable Filter 1.
+created.
 
 ## Bigram TSV
 
@@ -56,22 +56,6 @@ baseball	.	42
 .	It	31
 ```
 
-### Four-Column Schema
-
-When PMI is included:
-
-```text
-w1<TAB>w2<TAB>freq<TAB>pmi
-```
-
-Example:
-
-```text
-w1	w2	freq	pmi
-peanut	butter	200	6.417
-baseball	.	42	0.731
-```
-
 ### Field Definitions
 
 | Field | Type | Required | Definition |
@@ -79,11 +63,9 @@ baseball	.	42	0.731
 | `w1` | UTF-8 string | Yes | First token in the adjacent pair. |
 | `w2` | UTF-8 string | Yes | Second token in the adjacent pair. |
 | `freq` | Positive integer | Yes | Number of occurrences of the exact pair in the tokenized volume. |
-| `pmi` | Decimal | When PMI is included | Volume-level PMI rounded to three decimal places. |
 
 `freq` is not a page count, normalized rate, corpus frequency, or document
-frequency. Filters remove complete rows; they do not alter the retained row's
-original volume-level occurrence count.
+frequency.
 
 ## Token Semantics
 
@@ -96,7 +78,8 @@ path.
 - Inline hyphens become independent `-` tokens.
 - Words split by a line-final hyphen are recombined before tokenization.
 - Stanza MWT processing can expand contractions and clitics.
-- Bigrams are generated independently for each page.
+- Pages are sent to Stanza in batches of up to 50, but Stanza returns each page
+  separately and bigrams are generated independently for each page.
 
 Examples:
 
@@ -132,9 +115,7 @@ The same token can participate in two neighboring bigrams. This does not double
 its unigram frequency; bigram frequencies count adjacent pairs rather than
 individual words.
 
-## Frequency and PMI
-
-### Frequency
+## Frequency
 
 Bigram frequency is calculated from exact token tuples. Case variants and
 different tokenizations are counted separately:
@@ -144,94 +125,17 @@ The	dog	12
 the	dog	47
 ```
 
-### PMI
-
-PMI is calculated as:
-
-```text
-PMI(w1, w2) = log2(P(w1, w2) / (P(w1) * P(w2)))
-```
-
-The implementation uses:
-
-```text
-P(w1, w2) = bigram frequency / original total bigram occurrences
-P(w1)     = unigram frequency of w1 / original total tokens
-P(w2)     = unigram frequency of w2 / original total tokens
-```
-
-The denominators and unigram counts come from the unfiltered tokenized volume.
-Applying earlier filters therefore does not redefine the base probabilities.
-
-PMI can favor rare pairs. It is an association statistic rather than a direct
-measurement of linguistic correctness, OCR quality, or research relevance.
-Interpret it together with `freq`.
-
-## Filters
-
-The confirmed export policy is unfiltered. Filters 1, 2, 3, and 4 are disabled,
-so the production TSV uses the three-column `w1`, `w2`, `freq` schema. Run
-provenance and `run_metadata.json` record these states for each execution.
-
-The filtering module also contains an experimental Filter 4 helper, but
-`run_pipeline.py` does not call it and it does not alter exported rows.
-
-### Filter 1: Standard Stopword Bigrams
-
-The pipeline selects up to 25 case-folded tokens that:
-
-1. occur in the volume; and
-2. belong to the public stopword list configured for the volume language.
-
-A bigram is removed only when both tokens belong to the selected set.
-
-### Filter 2: Minimum Frequency
-
-Retains bigram types satisfying:
-
-```text
-freq >= min_freq
-```
-
-### Filter 3: PMI Threshold
-
-Retains bigram types satisfying:
-
-```text
-pmi >= min_pmi
-```
-
-### Filter 4: Exposure Cap
-
-Computes an occurrence budget:
-
-```text
-floor(max_exposure * total_tokens / 2)
-```
-
-Rows are evaluated in their existing ranked order. Rows are retained until the
-next row would exceed the budget. The reported exposure is:
-
-```text
-2 * retained bigram occurrences / total_tokens
-```
-
-This describes the unused helper only. Filter 4 is disabled and provides no
-reconstruction guarantee.
-
 ## Row Ordering
 
-When PMI is included, rows are sorted by descending frequency and then
-descending PMI.
-
-Without PMI, rows are exported in the counter's insertion order. The production
-pipeline intentionally avoids a volume-wide frequency sort because row order is
-not part of the dataset contract. Consumers should apply their own explicit sort
-when a particular ordering is required.
+Rows are exported in the counter's insertion order. The production pipeline
+intentionally avoids a volume-wide frequency sort because row order is not part
+of the dataset contract. Consumers should apply their own explicit sort when a
+particular ordering is required.
 
 ## Run Provenance JSON
 
-`provenance/<run_id>.json` records shared processing context.
+`metadata/<run_id>.json` records shared processing context in the default
+BigRed200 directory layout.
 
 Current fields include:
 
@@ -243,10 +147,8 @@ Current fields include:
 | `deployment_method` | Detected deployment context. |
 | `python_version` | Python runtime version. |
 | `stanza_version` | Installed Stanza package version. |
-| `nltk_version` | Installed NLTK package version. |
-| `stopwordsiso_version` | Installed stopwordsiso package version. |
 | `langid_version` | Installed langid package version. |
-| `filters` | Recorded filter switches and numeric thresholds. |
+| `export_policy` | Export policy used for the run; currently `unfiltered`. |
 | `stanza_models` | Tokenizer and MWT package names and manifest MD5 values. |
 
 The manifest is created with exclusive file creation so concurrent array tasks
@@ -275,10 +177,10 @@ It also records the following volume-level output metrics:
 
 | Field | Definition |
 | --- | --- |
-| `total_tokens` | Number of tokens produced before bigram filters are applied. Punctuation and numbers count as tokens. |
-| `distinct_bigram_types` | Number of distinct bigram rows retained after the configured filters. |
-| `total_bigram_occurrences` | Sum of `freq` across all retained bigram rows. |
-| `singleton_percentage` | Percentage of retained bigram types whose `freq` equals one. |
+| `total_tokens` | Number of tokens produced. Punctuation and numbers count as tokens. |
+| `distinct_bigram_types` | Number of distinct exported bigram rows. |
+| `total_bigram_occurrences` | Sum of `freq` across all exported bigram rows. |
+| `singleton_percentage` | Percentage of exported bigram types whose `freq` equals one. |
 | `tsv_size_bytes` | Actual size of the completed volume TSV measured from the filesystem. |
 | `tsv_size_mb` | `tsv_size_bytes` converted to MiB using 1,048,576 bytes per MiB. |
 
@@ -288,9 +190,9 @@ volume-level types; it is not a deduplicated corpus-wide vocabulary count.
 
 ### Pending-Volume TSV
 
-Array tasks write temporary shards during processing. After every SLURM array
-task finishes successfully, a dependent consolidation job writes one final
-file:
+Array tasks write temporary shards during processing. After the array reaches a
+terminal state, a dependent finalization job consolidates the available shards
+and writes one final file:
 
 ```text
 pending/pending_volumes.tsv
@@ -326,29 +228,8 @@ that retry. Concurrent runs should use different pending directories.
 | `UNSUPPORTED_LANGUAGE` | Metadata or detected language is outside configured support. |
 | `UNSUPPORTED_STANZA_LANGUAGE` | No Stanza mapping exists for the resolved language. |
 | `STANZA_PIPELINE_UNAVAILABLE` | The configured Stanza pipeline could not initialize. |
-| `UNSUPPORTED_STOPWORD_LANGUAGE` | No configured stopword source exists for the language. |
 | `MISSING_DEPENDENCY` | A required Python package is unavailable. |
 | `UNEXPECTED_ERROR` | An uncategorized exception reached the volume boundary. |
-
-## Optional Stopword Audit Information
-
-The unfiltered export does not generate stopword audit files. If Filter 1 is
-enabled for an experimental run, the following file is created for each
-processed volume.
-
-### Selected Stopwords
-
-```text
-stopwords/top25_stopwords/<htid>_top25.txt
-```
-
-Schema:
-
-```text
-word<TAB>freq
-```
-
-`word` is case-folded. `freq` combines case variants from the tokenized volume.
 
 ## Reading TSV Files
 
@@ -416,22 +297,16 @@ with open("volume.tsv", encoding="utf-8", newline="") as input_file:
             )
 ```
 
-The expected header is either:
+The expected header is:
 
 ```text
 w1	w2	freq
 ```
 
-or:
-
-```text
-w1	w2	freq	pmi
-```
-
 ## Interpretation Limitations
 
 Exports inherit limitations from OCR, bibliographic metadata, page structure,
-language models, and filtering choices. They may contain:
+and language models. They may contain:
 
 - OCR substitutions and segmentation errors;
 - scanner text not recognized by the boilerplate markers;
@@ -442,5 +317,5 @@ language models, and filtering choices. They may contain:
   analysis.
 
 Historical spelling and specialized vocabulary are not automatically errors.
-Researchers should review frequency, optional PMI, provenance, optional
-stopword audits, and the documented language limitations together.
+Researchers should review frequency, provenance, and the documented language
+limitations together.

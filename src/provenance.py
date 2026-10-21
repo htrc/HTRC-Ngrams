@@ -98,11 +98,6 @@ def get_stanza_model_metadata(stanza_resources_dir: Path) -> dict:
 
 def generate_run_provenance(
     run_id: str,
-    enable_f1: bool,
-    enable_f2: bool,
-    enable_f3: bool,
-    min_freq: int,
-    min_pmi: float,
     stanza_resources_dir: Path,
 ) -> dict:
     git_commit, deployment_method = get_git_commit()
@@ -113,17 +108,8 @@ def generate_run_provenance(
         "deployment_method": deployment_method,
         "python_version": sys.version.split()[0],
         "stanza_version": get_package_version("stanza"),
-        "nltk_version": get_package_version("nltk"),
-        "stopwordsiso_version": get_package_version("stopwordsiso"),
         "langid_version": get_package_version("langid"),
-        "filters": {
-            "filter_1": enable_f1,
-            "filter_2": enable_f2,
-            "filter_3": enable_f3,
-            "filter_4": False,
-            "min_frequency": min_freq,
-            "min_pmi": min_pmi,
-        },
+        "export_policy": "unfiltered",
         "stanza_models": get_stanza_model_metadata(stanza_resources_dir),
     }
 

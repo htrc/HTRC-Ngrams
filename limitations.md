@@ -6,8 +6,8 @@ candidate responses; it does not define automatic correction rules.
 
 ## Review Scope
 
-The core 20 languages were reviewed on 2026-09-16 with the current
-`tokenize_page()` path and Stanza 1.11.0 resources installed for that review.
+The core 20 languages were reviewed on 2026-09-16 with the current single-page
+tokenization path and Stanza 1.11.0 resources installed for that review.
 The controlled cases covered punctuation, case, numbers, apostrophes, inline
 and line-break hyphens, clitics, diacritics, and historical spelling where
 relevant.
@@ -46,7 +46,7 @@ older sample from being treated as a corpus-wide result.
   coordinates. OCR column ordering can make those heuristics unreliable.
 - The Stanza tokenization path does not apply a single-character whitelist.
   Current Stanza tokens, including valid and erroneous single-character tokens,
-  are retained unless a later filter removes their bigrams.
+  are retained in the unfiltered bigram export.
 
 ## English (`eng`)
 

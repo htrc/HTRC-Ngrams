@@ -22,15 +22,15 @@ from src.engine_io import (
 )
 from src.engine_nlp import (
     LowConfidenceLanguageError,
+    STANZA_PAGE_BATCH_SIZE,
     StanzaPipelineInitializationError,
     UnsupportedLanguageResolutionError,
     UnsupportedStanzaLanguageError,
     get_profile,
     resolve_language,
     resolve_language_from_metadata,
-    tokenize_page,
+    tokenize_page_batch,
 )
-from src.engine_filters import select_top_standard_stopwords, filter_1_standard_stopword_bigrams, filter2_min_frequency, filter3_pmi, UnsupportedLanguageError, get_stopword_metadata
 from src.provenance import generate_run_provenance, write_run_provenance_once
 from src.engine_export import is_complete_tsv, atomic_write_tsv
 import json
@@ -95,21 +95,12 @@ RESULT_FIELDS = [
     "volume_name",
     "zip_path",
     "language",
-    "stopword_source",
-    "stopword_list_code",
-    "selected_stopword_count",
-    "filter_1_enabled",
-    "filter_2_enabled",
-    "filter_3_enabled",
     "output_file",
-    "top25_stopword_file",
-    "dropped_bigram_file",
     "total_pages",
     "source_text_pages",
     "failed_pages",
     "decoding_warnings",
     "total_tokens",
-    "unique_unigrams",
     "distinct_bigram_types",
     "total_bigram_occurrences",
     "singleton_percentage",
@@ -126,9 +117,7 @@ PENDING_FIELDS = ["htid", "reason_code", "detail"]
 # Volume analysis
 # ---------------------------------------------------------------------------
 
-def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
-                   enable_f1: bool, enable_f2: bool, enable_f3: bool,
-                   min_freq: int = 2, min_pmi: float = 0.0, max_exposure: float = 0.15,
+def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
                    max_zip_size_mb: float = 150.0, flat_output: bool = False,
                    ef_root: Path = None, collect_metrics: bool = False):
 
@@ -185,21 +174,32 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
 
     profile = get_profile(lang)
 
-    needs_unigrams = enable_f1 or enable_f3 or collect_metrics
-    unigram_counts = Counter() if needs_unigrams else None
     bigram_counts = Counter()
     total_tokens = 0
     read_stats = VolumeReadStats()
 
+    def count_tokenized_pages(page_tokens):
+        nonlocal total_tokens
+        for words in page_tokens:
+            if not words:
+                continue
+            total_tokens += len(words)
+            bigram_counts.update(
+                zip(words, itertools.islice(words, 1, None))
+            )
+
+    page_batch = []
     for page in stream_volume_from_zip(zip_path, stats=read_stats):
-        words = tokenize_page(page, profile, lang)
-        if not words:
-            continue
-        total_tokens += len(words)
-        if unigram_counts is not None:
-            unigram_counts.update(words)
-        bigram_counts.update(
-            zip(words, itertools.islice(words, 1, None))
+        page_batch.append(page)
+        if len(page_batch) == STANZA_PAGE_BATCH_SIZE:
+            count_tokenized_pages(
+                tokenize_page_batch(page_batch, profile, lang)
+            )
+            page_batch.clear()
+
+    if page_batch:
+        count_tokenized_pages(
+            tokenize_page_batch(page_batch, profile, lang)
         )
 
     if total_tokens == 0:
@@ -224,101 +224,28 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
             "Text pages were read, but tokenization produced no tokens.",
         )
 
-    original_total_bigrams = (
-        sum(bigram_counts.values()) if enable_f3 else 0
-    )
-
-    # --- APPLY FILTER 1 ---
-    stopword_meta = {"source": "", "list_code": ""}
-    dropped_f1 = Counter()
-    selected_stopwords = set()
-    top25_with_counts = {}
-    top25_file_path = ""
-    dropped_file_path = ""
-
-    if enable_f1:
-        stopword_meta = get_stopword_metadata(lang)
-        top25_dir = audit_dir / "top25_stopwords"
-        dropped_dir = audit_dir / "top25_dropped_bigrams"
-        top25_dir.mkdir(parents=True, exist_ok=True)
-        dropped_dir.mkdir(parents=True, exist_ok=True)
-        clean_htid = htid.replace('/', '_').replace(':', '_')
-        top25_file_path = str(top25_dir / f"{clean_htid}_top25.txt")
-        dropped_file_path = str(dropped_dir / f"{clean_htid}_dropped.tsv")
-        selected_stopwords, top25_with_counts = select_top_standard_stopwords(unigram_counts, lang, top_n=25)
-        bigram_counts, dropped_f1 = filter_1_standard_stopword_bigrams(bigram_counts, selected_stopwords)
-
-        # --- EXPORT AUDIT LOGS FOR FILTER 1 ---
-        atomic_write_tsv(
-            top25_file_path,
-            ["word", "freq"],
-            top25_with_counts.items()
-        )
-        atomic_write_tsv(
-            dropped_file_path,
-            ["w1", "w2", "freq"],
-            ([w1, w2, count] for (w1, w2), count in dropped_f1.most_common())
-        )
-
-
-    # --- APPLY FILTER 2 ---
-    if enable_f2:
-        bigram_counts, _, _ = filter2_min_frequency(
-            bigram_counts, min_freq=min_freq
-        )
-
-    # --- APPLY FILTER 3 ---
-    if enable_f3:
-        scored_results, _ = filter3_pmi(
-            bigram_counts,
-            unigram_counts,
-            original_total_bigrams,
-            total_tokens,
-            min_pmi=min_pmi,
-        )
-        has_pmi = True
-        final_results = scored_results
-    else:
-        has_pmi = False
-        final_results = bigram_counts.items()
-
     # Export securely formatted filename with atomic writes
     tsv_path.parent.mkdir(parents=True, exist_ok=True)
-    if has_pmi:
-        headers = ["w1", "w2", "freq", "pmi"]
-        rows = ([w1, w2, b_count, pmi] for (w1, w2), b_count, pmi in final_results)
-    else:
-        headers = ["w1", "w2", "freq"]
-        rows = ([w1, w2, b_count] for (w1, w2), b_count in final_results)
+    headers = ["w1", "w2", "freq"]
+    rows = ([w1, w2, count] for (w1, w2), count in bigram_counts.items())
 
     atomic_write_tsv(tsv_path, headers, rows)
     result = {
         'volume_name':          volume_name,
         'zip_path':             str(zip_path),
         'language':             lang,
-        'stopword_source':      stopword_meta['source'],
-        'stopword_list_code':   stopword_meta['list_code'],
-        'selected_stopword_count': len(selected_stopwords),
-        'filter_1_enabled':     enable_f1,
-        'filter_2_enabled':     enable_f2,
-        'filter_3_enabled':     enable_f3,
         'output_file':          str(tsv_path),
-        'top25_stopword_file':  top25_file_path,
-        'dropped_bigram_file':  dropped_file_path,
     }
 
     if not collect_metrics:
         return result
 
-    if has_pmi:
-        retained_counts = [count for _, count, _ in final_results]
-    else:
-        retained_counts = list(bigram_counts.values())
+    exported_counts = list(bigram_counts.values())
 
-    distinct_bigram_types = len(retained_counts)
-    total_bigram_occurrences = sum(retained_counts)
+    distinct_bigram_types = len(exported_counts)
+    total_bigram_occurrences = sum(exported_counts)
     singleton_percentage = (
-        100.0 * sum(count == 1 for count in retained_counts)
+        100.0 * sum(count == 1 for count in exported_counts)
         / distinct_bigram_types
         if distinct_bigram_types
         else 0.0
@@ -331,7 +258,6 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
         'failed_pages':         read_stats.failed_pages,
         'decoding_warnings':    read_stats.decoding_warnings,
         'total_tokens':         total_tokens,
-        'unique_unigrams':      len(unigram_counts),
         'distinct_bigram_types': distinct_bigram_types,
         'total_bigram_occurrences': total_bigram_occurrences,
         'singleton_percentage': round(singleton_percentage, 1),
@@ -346,7 +272,7 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
 
 def process_one(args_tuple):
     """Module-level wrapper to avoid multiprocessing PicklingError on local functions."""
-    htid, pairtree_root, ef_root, export_dir, audit_dir, enable_f1, enable_f2, enable_f3, min_freq, min_pmi, max_exposure, max_zip_size_mb, flat_output, collect_metrics = args_tuple
+    htid, pairtree_root, ef_root, export_dir, max_zip_size_mb, flat_output, collect_metrics = args_tuple
     zip_path = htid_to_zip_path(htid, pairtree_root)
 
     def pending(reason_code, detail=""):
@@ -361,13 +287,7 @@ def process_one(args_tuple):
         return pending("ZIP_NOT_FOUND", str(zip_path))
 
     try:
-        result = analyze_volume(htid, zip_path, export_dir, audit_dir,
-                                enable_f1=enable_f1,
-                                enable_f2=enable_f2,
-                                enable_f3=enable_f3,
-                                min_freq=min_freq,
-                                min_pmi=min_pmi,
-                                max_exposure=max_exposure,
+        result = analyze_volume(htid, zip_path, export_dir,
                                 max_zip_size_mb=max_zip_size_mb,
                                 flat_output=flat_output,
                                 ef_root=ef_root,
@@ -394,8 +314,6 @@ def process_one(args_tuple):
         return pending("UNSUPPORTED_STANZA_LANGUAGE", e.language)
     except StanzaPipelineInitializationError as e:
         return pending("STANZA_PIPELINE_UNAVAILABLE", str(e))
-    except UnsupportedLanguageError as e:
-        return pending("UNSUPPORTED_STOPWORD_LANGUAGE", str(e))
     except ImportError as e:
         return pending("MISSING_DEPENDENCY", str(e))
     except Exception as e:
@@ -425,23 +343,13 @@ def main():
     parser.add_argument("--pairtree", required=True, type=Path, help="Absolute path to the HathiTrust Pairtree root (e.g., /N/project/htrc/data/ht_text)")
     parser.add_argument("--id-list", required=True, type=Path, help="Absolute path to a text file containing HathiTrust Volume IDs (one per line)")
     parser.add_argument("--bibframe-root", type=Path, help="Optional root directory containing HTRC Bibframe JSON-LD metadata")
-    parser.add_argument("--min-freq", type=int, default=2, help="Minimum volume-level frequency threshold for Filter 2 (default: 2)")
-    parser.add_argument("--min-pmi", type=float, default=0.0, help="Minimum PMI threshold for Filter 3 (default: 0.0)")
-    parser.add_argument("--max-exposure", type=float, default=0.15, help="Maximum token exposure ratio for Filter 4 (default: 0.15)")
     parser.add_argument("--max-zip-size-mb", type=float, default=150.0, help="Skip source ZIP files larger than this many MiB (default: 150)")
     parser.add_argument("--flat-output", action="store_true", help="Save TSV files in one flat directory (not recommended for more than 1 million volumes)")
-    parser.add_argument("--filter1", action=argparse.BooleanOptionalAction, default=False, help="Enable Filter 1 (Standard Stopwords)")
-    parser.add_argument("--filter2", action=argparse.BooleanOptionalAction, default=False, help="Enable Filter 2 (Min Frequency)")
-    parser.add_argument("--filter3", action=argparse.BooleanOptionalAction, default=False, help="Enable Filter 3 (PMI)")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory to save volume TSVs and run_metadata.json")
-    parser.add_argument("--audit-dir", type=Path, required=True, help="Directory to save audit files (e.g., dropped bigrams)")
     parser.add_argument("--metadata-dir", type=Path, required=True, help="Directory to save global run provenance metadata")
     parser.add_argument("--summary-dir", type=Path, help="Optional directory for task-sharded summary CSV files. If omitted, summary CSV files are not written.")
     parser.add_argument("--pending-dir", type=Path, help="Directory for task-sharded pending-volume files (default: <output-dir>/task_logs/<run-id>/pending)")
     args = parser.parse_args()
-
-    if args.min_freq < 1:
-        parser.error("--min-freq must be at least 1")
 
     if args.max_zip_size_mb <= 0:
         parser.error("--max-zip-size-mb must be greater than zero")
@@ -449,7 +357,6 @@ def main():
     pairtree_root = args.pairtree
     htids_file = getattr(args, 'id_list')
     export_dir = args.output_dir
-    audit_dir = args.audit_dir
     metadata_dir = args.metadata_dir
     summary_root = args.summary_dir
     pending_root = args.pending_dir
@@ -467,8 +374,6 @@ def main():
         )
 
     export_dir.mkdir(parents=True, exist_ok=True)
-    if args.filter1:
-        audit_dir.mkdir(parents=True, exist_ok=True)
     metadata_dir.mkdir(parents=True, exist_ok=True)
     if summary_root is not None:
         summary_root.mkdir(parents=True, exist_ok=True)
@@ -477,22 +382,16 @@ def main():
     # Configuration Fingerprinting
     metadata_path = export_dir / "run_metadata.json"
     current_config = {
-        "schema_version": "1.3",
-        "pipeline_version": "2.1.0",
+        "schema_version": "2.0",
+        "pipeline_version": "3.0.0",
+        "export_policy": "unfiltered",
         "pending_schema_version": "1.0",
-        "min_freq": args.min_freq,
-        "min_pmi": args.min_pmi,
-        "max_exposure": args.max_exposure,
+        "stanza_page_batch_size": STANZA_PAGE_BATCH_SIZE,
         "max_zip_size_mb": args.max_zip_size_mb,
-        "filter_1_enabled": args.filter1,
-        "filter_2_enabled": args.filter2,
-        "filter_3_enabled": args.filter3,
-        "filter_4_enabled": False,
         "flat_output": args.flat_output,
         "pairtree_root": str(pairtree_root.resolve()),
         "bibframe_root": str(ef_root.resolve()) if ef_root is not None else None,
         "output_dir": str(export_dir.resolve()),
-        "audit_dir": str(audit_dir.resolve()),
         "metadata_dir": str(metadata_dir.resolve()),
         "summary_dir": str(summary_root.resolve()) if summary_root is not None else None,
         "pending_dir": str(pending_root.resolve()) if pending_root is not None else None,
@@ -561,19 +460,14 @@ def main():
         run_id = f"local_{time.strftime('%Y%m%d_%H%M%S')}"
 
     stanza_res_dir = Path(os.environ.get("STANZA_RESOURCES_DIR", Path.home() / "stanza_resources"))
-    prov_data = generate_run_provenance(
-        run_id, args.filter1, args.filter2, args.filter3,
-        args.min_freq, args.min_pmi, stanza_res_dir
-    )
+    prov_data = generate_run_provenance(run_id, stanza_res_dir)
     write_run_provenance_once(prov_data, metadata_dir)
 
     collect_metrics = summary_root is not None
     task_args = [
         (
-            htid, pairtree_root, ef_root, export_dir, audit_dir,
-            args.filter1, args.filter2, args.filter3, args.min_freq,
-            args.min_pmi, args.max_exposure, args.max_zip_size_mb,
-            args.flat_output, collect_metrics,
+            htid, pairtree_root, ef_root, export_dir,
+            args.max_zip_size_mb, args.flat_output, collect_metrics,
         )
         for htid in my_htids
     ]

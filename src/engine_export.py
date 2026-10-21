@@ -7,7 +7,6 @@ from typing import Iterable, Union
 
 BIGRAM_HEADERS = {
     ("w1", "w2", "freq"),
-    ("w1", "w2", "freq", "pmi"),
 }
 
 def is_complete_tsv(path: Path, allowed_headers=BIGRAM_HEADERS) -> bool:

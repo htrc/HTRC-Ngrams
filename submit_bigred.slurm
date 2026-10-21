@@ -9,8 +9,7 @@
 #SBATCH --time=1-00:00:00
 #SBATCH --partition=general
 #SBATCH --mail-type=END,FAIL
-#SBATCH --output=logs/ngrams_%A_%a.out
-#SBATCH --error=logs/ngrams_%A_%a.err
+#SBATCH --output=logs/ngrams_%A_%a.log
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +28,6 @@ module load python
 VENV_PATH="${VENV_PATH:-/N/project/htrc/venvs/htrc-ngram-stanza}"
 source "$VENV_PATH/bin/activate"
 export STANZA_RESOURCES_DIR="${STANZA_RESOURCES_DIR:-/N/project/htrc/stanza_resources}"
-export NLTK_DATA="${NLTK_DATA:-/N/project/htrc/nltk_data}"
 
 # 2. Enter working directory
 cd "$SLURM_SUBMIT_DIR"
@@ -44,7 +42,6 @@ ID_LIST="${ID_LIST:-htids.txt}"
 RUN_ROOT="${RUN_ROOT:-outputs/current_run}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-$RUN_ROOT/bigrams}"
-AUDIT_DIR="${AUDIT_DIR:-$RUN_ROOT/audit}"
 METADATA_DIR="${METADATA_DIR:-$RUN_ROOT/metadata}"
 # SUMMARY_DIR="${SUMMARY_DIR:-$RUN_ROOT/summaries}"
 # Summary CSV export is disabled by omitting --summary-dir below.
@@ -60,16 +57,9 @@ python3 -u run_pipeline.py \
     --id-list "$ID_LIST" \
     --bibframe-root "$BIBFRAME_ROOT" \
     --output-dir "$OUTPUT_DIR" \
-    --audit-dir "$AUDIT_DIR" \
     --metadata-dir "$METADATA_DIR" \
     --pending-dir "$PENDING_DIR" \
-    --max-zip-size-mb "$MAX_ZIP_SIZE_MB" \
-    --min-freq 2 \
-    --min-pmi 0.0 \
-    --max-exposure 0.15 \
-    --no-filter1 \
-    --no-filter2 \
-    --no-filter3
+    --max-zip-size-mb "$MAX_ZIP_SIZE_MB"
 
 # Pairtree output is the default. Do not pass --flat-output for production.
 

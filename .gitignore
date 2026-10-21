@@ -29,11 +29,6 @@ local_pairtree_usage.py
 # Input data
 htids.txt
 
-# Local script for merging all log files in BigRed200 
-merge_logs.sh 
-# Usage: bash merge_logs.sh <SLURM_JOB_ID>
-# Example: bash merge_logs.sh 123456
-
 # Local testing and scratch files
 test_local.py
 test_outputs/

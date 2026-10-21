@@ -1,4 +1,2 @@
 langid
-nltk
 stanza
-stopwordsiso

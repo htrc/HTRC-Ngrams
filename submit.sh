@@ -7,6 +7,8 @@ cd "$SCRIPT_DIR"
 ID_LIST="${ID_LIST:-htids.txt}"
 RUN_ROOT="${RUN_ROOT:-outputs/current_run}"
 PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-$RUN_ROOT/logs}"
+TASK_LOG_DIR="${TASK_LOG_DIR:-$RUN_LOG_DIR/tasks}"
 
 if [ ! -f "$ID_LIST" ]; then
     echo "❌ HTID list not found: $ID_LIST"
@@ -30,19 +32,21 @@ else
 fi
 
 echo "📦 Submitting $N volume(s) across $((ARRAY_MAX+1)) task(s)..."
-mkdir -p logs
+mkdir -p "$TASK_LOG_DIR"
 ARRAY_SUBMISSION=$(sbatch --parsable \
     --export=ALL,ID_LIST="$ID_LIST",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR" \
+    --output="$TASK_LOG_DIR/task_%A_%a.log" \
     --array=0-$ARRAY_MAX \
     submit_bigred.slurm)
 ARRAY_JOB_ID=${ARRAY_SUBMISSION%%;*}
 echo "✅ Array job: $ARRAY_JOB_ID"
 
-CONSOLIDATION_SUBMISSION=$(sbatch --parsable \
-    --dependency=afterok:"$ARRAY_JOB_ID" \
-    --export=ALL,PENDING_DIR="$PENDING_DIR",PENDING_RUN_ID="slurm_$ARRAY_JOB_ID" \
-    consolidate_pending.slurm)
-CONSOLIDATION_JOB_ID=${CONSOLIDATION_SUBMISSION%%;*}
+FINALIZATION_SUBMISSION=$(sbatch --parsable \
+    --dependency=afterany:"$ARRAY_JOB_ID" \
+    --export=ALL,PENDING_DIR="$PENDING_DIR",PENDING_RUN_ID="slurm_$ARRAY_JOB_ID",TASK_LOG_DIR="$TASK_LOG_DIR",RUN_LOG_DIR="$RUN_LOG_DIR",ARRAY_JOB_ID="$ARRAY_JOB_ID" \
+    --output="$RUN_LOG_DIR/finalize_%j.log" \
+    finalize_run.slurm)
+FINALIZATION_JOB_ID=${FINALIZATION_SUBMISSION%%;*}
 
-echo "✅ Pending consolidation job: $CONSOLIDATION_JOB_ID"
+echo "✅ Run finalization job: $FINALIZATION_JOB_ID"
 echo "✅ Monitor with: squeue -u $USER"

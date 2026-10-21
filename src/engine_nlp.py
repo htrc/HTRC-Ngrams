@@ -6,6 +6,8 @@ from .engine_io import MetadataAccessError, MetadataPermissionError
 
 _STANZA_PIPELINES = {}
 
+STANZA_PAGE_BATCH_SIZE = 50
+
 STANZA_LANG_MAP = {
     "eng": "en",
     "deu": "de",
@@ -141,10 +143,8 @@ def separate_vietnamese_sentence_punctuation(text: str) -> str:
     return re.sub(r"([.!?。！？]+)(?=\s|$)", r" \1 ", text)
 
 
-def tokenize_with_stanza(text: str, lang: str):
-    nlp = get_stanza_pipeline(lang)
-    doc = nlp(text)
-
+def tokens_from_stanza_document(doc):
+    """Return the word-token sequence from one Stanza document."""
     tokens = []
     for sentence in doc.sentences:
         if sentence.words:
@@ -153,6 +153,29 @@ def tokenize_with_stanza(text: str, lang: str):
             tokens.extend(token.text for token in sentence.tokens)
 
     return [token for token in tokens if token and token.strip()]
+
+
+def tokenize_with_stanza(text: str, lang: str):
+    """Single-document helper retained for tokenizer validation."""
+    nlp = get_stanza_pipeline(lang)
+    return tokens_from_stanza_document(nlp(text))
+
+
+def tokenize_pages_with_stanza(page_texts: list[str], lang: str):
+    """Tokenize multiple cleaned pages while keeping each page separate."""
+    if not page_texts:
+        return []
+
+    nlp = get_stanza_pipeline(lang)
+    documents = nlp.bulk_process(page_texts)
+    if len(documents) != len(page_texts):
+        raise RuntimeError(
+            "Stanza returned a different number of documents than input pages."
+        )
+
+    return [tokens_from_stanza_document(document) for document in documents]
+
+
 class LowConfidenceLanguageError(RuntimeError):
     """
     Raised when langid's confidence score is too low to trust.
@@ -376,11 +399,11 @@ def is_header_footer(line: str, profile: dict) -> bool:
 
     return False
 
-def tokenize_page(text: str, profile: dict, lang: str = ""):
-    """Clean, line-strip, and token-merge a single page, capturing ' and -."""
+def prepare_page_text(text: str, profile: dict, lang: str = "") -> str:
+    """Apply page-level cleanup before language-specific tokenization."""
 
     if is_scanner_boilerplate_page(text):
-        return []
+        return ""
 
     lines = text.splitlines()
 
@@ -428,13 +451,31 @@ def tokenize_page(text: str, profile: dict, lang: str = ""):
     if lang == "vie":
         text = separate_vietnamese_sentence_punctuation(text)
 
-    # Let Stanza handle Tokenization directly
-    final_tokens = tokenize_with_stanza(text, lang)
+    return text
 
-    return final_tokens
+
+def tokenize_page(text: str, profile: dict, lang: str = ""):
+    """Single-page helper retained for controlled tokenizer validation."""
+    prepared_text = prepare_page_text(text, profile, lang)
+    if not prepared_text.strip():
+        return []
+
+    return tokenize_with_stanza(prepared_text, lang)
+
+
+def tokenize_page_batch(pages: list[str], profile: dict, lang: str = ""):
+    """Clean and bulk-tokenize pages without creating cross-page adjacency."""
+    prepared_pages = []
+    for page in pages:
+        prepared_text = prepare_page_text(page, profile, lang)
+        if prepared_text.strip():
+            prepared_pages.append(prepared_text)
+
+    return tokenize_pages_with_stanza(prepared_pages, lang)
+
 
 def generate_ngrams_with_counts(words, n):
-    """Generate n-grams and return Counter object."""
+    """Generate n-grams for local validation and return their counts."""
     if n == 1:
         return Counter((token,) for token in words)
 

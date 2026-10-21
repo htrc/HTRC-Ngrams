@@ -10,17 +10,14 @@ The pipeline combines:
 - volume-level language resolution;
 - multilingual tokenization with Stanford Stanza;
 - page-level text cleanup;
-- unigram and bigram counting;
-- four documented filtering operations, all disabled for the unfiltered export;
-- optional per-volume stopword audit files when Filter 1 is enabled;
+- direct, unfiltered bigram counting;
 - run-level provenance metadata; and
 - checkpointed TSV export.
 
-This repository is under active research and data-quality review. Filtering
-changes the content and size of an export, but no filter or filter combination
-in this software should be interpreted as a guarantee against reconstruction
-or as proof of compliance with a legal, policy, or non-consumptive-data
-standard. Release decisions require separate institutional review.
+This repository is under active research and data-quality review. The software
+does not provide a guarantee against reconstruction or proof of compliance with
+a legal, policy, or non-consumptive-data standard. Release decisions require
+separate institutional review.
 
 ## Processing Overview
 
@@ -29,20 +26,19 @@ For each HTID, the pipeline:
 1. Resolves the Pairtree ZIP path.
 2. Resolves one language for the volume from JSON-LD metadata when available.
 3. Uses `langid` as a constrained fallback across the 27 supported languages.
-4. Streams the volume one page at a time.
+4. Streams the volume into bounded batches of 50 pages.
 5. Removes recognized scanner boilerplate pages.
 6. Examines likely header and footer lines at the beginning and end of a page.
 7. Recombines words split by a line-final hyphen.
 8. Removes selected zero-width, superscript, and subscript characters.
 9. Applies Hebrew-specific diacritic removal where applicable.
-10. Tokenizes the page with the configured Stanza tokenizer and, where
-    available, MWT processor.
-11. Counts case-sensitive unigrams and adjacent bigrams within that page.
-12. Applies the configured filters.
-13. Writes the volume TSV, result metadata, and run provenance. Stopword audit
-    files are written only when Filter 1 is enabled.
+10. Bulk-tokenizes up to 50 cleaned pages with the configured Stanza tokenizer
+    and, where available, MWT processor.
+11. Counts adjacent bigrams within each page without filtering them.
+12. Writes the volume TSV, optional result metadata, and run provenance.
 
-Pages are processed independently. Bigrams do not cross page boundaries.
+Stanza returns one document for each page in the batch. Pages remain
+independent, and bigrams do not cross page boundaries.
 
 ## Supported Languages
 
@@ -54,35 +50,35 @@ outside the configured profiles is recorded with reason code
 `UNSUPPORTED_LANGUAGE`; the unsupported code is retained in the detail field
 instead of being routed through a generic Latin fallback.
 
-| Language | Profile code | Stanza code | Stopword source |
-| --- | --- | --- | --- |
-| English | `eng` | `en` | NLTK |
-| German | `deu` | `de` | NLTK |
-| French | `fra` | `fr` | NLTK |
-| Spanish | `spa` | `es` | NLTK |
-| Chinese | `zho` | `zh-hans` | NLTK |
-| Japanese | `jpn` | `ja` | stopwords-iso |
-| Russian | `rus` | `ru` | NLTK |
-| Italian | `ita` | `it` | NLTK |
-| Portuguese | `por` | `pt` | NLTK |
-| Arabic | `ara` | `ar` | NLTK |
-| Latin | `lat` | `la` | stopwords-iso |
-| Dutch | `dut` | `nl` | NLTK |
-| Polish | `pol` | `pl` | stopwords-iso |
-| Swedish | `swe` | `sv` | NLTK |
-| Hebrew | `heb` | `he` | NLTK |
-| Korean | `kor` | `ko` | stopwords-iso |
-| Czech | `cze` | `cs` | stopwords-iso |
-| Danish | `dan` | `da` | NLTK |
-| Indonesian | `ind` | `id` | NLTK |
-| Hungarian | `hun` | `hu` | NLTK |
-| Hindi | `hin` | `hi` | stopwords-iso |
-| Croatian | `hrv` | `hr` | stopwords-iso |
-| Turkish | `tur` | `tr` | NLTK |
-| Norwegian | `nor` | `no` (Bokmål alias) | NLTK |
-| Thai | `tha` | `th` | stopwords-iso |
-| Vietnamese | `vie` | `vi` | stopwords-iso |
-| Urdu | `urd` | `ur` | stopwords-iso |
+| Language | Profile code | Stanza code |
+| --- | --- | --- |
+| English | `eng` | `en` |
+| German | `deu` | `de` |
+| French | `fra` | `fr` |
+| Spanish | `spa` | `es` |
+| Chinese | `zho` | `zh-hans` |
+| Japanese | `jpn` | `ja` |
+| Russian | `rus` | `ru` |
+| Italian | `ita` | `it` |
+| Portuguese | `por` | `pt` |
+| Arabic | `ara` | `ar` |
+| Latin | `lat` | `la` |
+| Dutch | `dut` | `nl` |
+| Polish | `pol` | `pl` |
+| Swedish | `swe` | `sv` |
+| Hebrew | `heb` | `he` |
+| Korean | `kor` | `ko` |
+| Czech | `cze` | `cs` |
+| Danish | `dan` | `da` |
+| Indonesian | `ind` | `id` |
+| Hungarian | `hun` | `hu` |
+| Hindi | `hin` | `hi` |
+| Croatian | `hrv` | `hr` |
+| Turkish | `tur` | `tr` |
+| Norwegian | `nor` | `no` (Bokmål alias) |
+| Thai | `tha` | `th` |
+| Vietnamese | `vie` | `vi` |
+| Urdu | `urd` | `ur` |
 
 The aliases `ger`, `fre`, `chi`, `ces`, and `scr` are normalized to the
 corresponding configured profiles.
@@ -125,83 +121,13 @@ international
 Tokenizer behavior is model-specific. Known model-specific behavior is
 documented in [`limitations.md`](limitations.md).
 
-## Filtering
-
-The execution path provides three selectable filters and retains an
-experimental Filter 4 helper. Their states and thresholds are recorded in
-`run_metadata.json` and run provenance so that an export can be interpreted.
-
-### Filter Policy Status
-
-The confirmed export policy is unfiltered. Filters 1, 2, 3, and 4 are disabled.
-The command-line defaults and BigRed200 wrapper both implement this policy.
-Unfiltered TSVs contain every distinct bigram produced by the preprocessing and
-tokenization path, with its original volume-level frequency.
-
-Filter 4 remains an experimental helper in `engine_filters.py`, but the current
-`run_pipeline.py` execution path does not call it. Consequently,
-`--max-exposure` is a recorded compatibility parameter and does not alter
-exported rows. It must not be described as an active protection.
-
-### Filter 1: Standard Stopword Bigrams
-
-For each volume, the pipeline:
-
-1. loads a public language-specific stopword list;
-2. intersects that list with the volume's case-folded unigram counts;
-3. selects up to the 25 most frequent matching stopwords; and
-4. removes a bigram only when both tokens belong to that selected set.
-
-Proper nouns and other high-frequency content words are not selected unless
-they appear in the public stopword source.
-
-### Filter 2: Minimum Frequency
-
-Removes a bigram type when its volume-level frequency is below `min_freq`.
-
-```text
-frequency >= min_freq
-```
-
-The command-line default is `2`.
-
-### Filter 3: Pointwise Mutual Information
-
-Calculates volume-level pointwise mutual information:
-
-```text
-PMI(w1, w2) = log2(P(w1, w2) / (P(w1) * P(w2)))
-```
-
-The calculation uses the original volume-level unigram counts, token total, and
-total bigram occurrences. Earlier filtering therefore does not redefine the
-base probabilities. Rows below `min_pmi` are removed. The command-line default
-is `0.0`.
-
-PMI is sensitive to low-frequency pairs and should be interpreted together with
-frequency.
-
-### Experimental Filter 4: Exposure Cap
-
-Limits retained bigram occurrences relative to the original volume token count.
-The implementation computes:
-
-```text
-maximum bigram occurrences = floor(max_exposure * total_tokens / 2)
-```
-
-The helper would retain rows in ranked order until adding another row exceeded
-the occurrence budget. It is not active in the current execution path. A final
-team decision is required before it is either integrated or removed.
-
 ## Generated Files
 
 The primary output is one volume-level bigram TSV per successfully processed
 HTID. Operational deployments also create provenance manifests,
 pending-volume records, and scheduler logs. Optional task-sharded result
-summaries are written only when `--summary-dir` is supplied. Stopword audit
-files are created only if Filter 1 is enabled. These supporting files are
-intended for pipeline operation and review and do not all need to be
+summaries are written only when `--summary-dir` is supplied. These supporting
+files are intended for pipeline operation and review and do not all need to be
 distributed with the research dataset.
 
 See [`README_EXPORT.md`](README_EXPORT.md) for the files and fields that may be
@@ -212,7 +138,6 @@ provided to researchers.
 - Python 3
 - Access to HathiTrust plain-text Pairtree ZIP volumes
 - Stanza tokenizer models for the target languages
-- NLTK stopword corpus
 - Sufficient memory and temporary storage for the selected worker count
 
 Install Python dependencies in a virtual environment:
@@ -222,13 +147,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
-```
-
-Install the NLTK stopword corpus into a persistent location:
-
-```bash
-export NLTK_DATA=/path/to/nltk_data
-python3 -m nltk.downloader -d "$NLTK_DATA" stopwords
 ```
 
 Set the Stanza model directory:
@@ -301,15 +219,9 @@ python3 run_pipeline.py \
   --id-list /path/to/htids.txt \
   --bibframe-root /path/to/bibframe-jsonld \
   --output-dir /path/to/output \
-  --audit-dir /path/to/audit \
   --metadata-dir /path/to/metadata \
   --pending-dir /path/to/pending \
-  --max-zip-size-mb 150 \
-  --min-freq 2 \
-  --min-pmi 0.0 \
-  --no-filter1 \
-  --no-filter2 \
-  --no-filter3
+  --max-zip-size-mb 150
 ```
 
 ### Arguments
@@ -320,34 +232,28 @@ python3 run_pipeline.py \
 | `--id-list` | Yes | UTF-8 text file containing one HTID per line. |
 | `--bibframe-root` | No | Root containing HTRC Bibframe JSON-LD metadata. If omitted, language resolution uses text fallback. |
 | `--output-dir` | Yes | Directory to save volume TSVs and `run_metadata.json`. |
-| `--audit-dir` | Yes | Directory to save Filter 1 audit files. The directory is created only when Filter 1 is enabled. |
 | `--metadata-dir` | Yes | Directory to save global run provenance metadata. |
 | `--summary-dir` | No | Enables task-sharded summary CSV files in the specified directory. If omitted, no summary CSV files are written. |
 | `--pending-dir` | No | Base directory for task-sharded pending-volume files. Defaults under `--output-dir`. |
-| `--filter1` / `--no-filter1` | No | Enable/disable Filter 1 (Standard Stopwords). Default: disabled. |
-| `--filter2` / `--no-filter2` | No | Enable/disable Filter 2 (Min Frequency). Default: disabled. |
-| `--filter3` / `--no-filter3` | No | Enable/disable Filter 3 (PMI). Default: disabled. |
-| `--min-freq` | No | Minimum frequency supplied to Filter 2. |
-| `--min-pmi` | No | Minimum PMI supplied to Filter 3. |
-| `--max-exposure` | No | Compatibility parameter for the experimental Filter 4 helper. It is recorded but does not currently alter output. |
 | `--max-zip-size-mb` | No | Skip source ZIPs larger than this many MiB. Default: `150`. |
 | `--flat-output` | No | Writes volume TSVs into one directory instead of a Pairtree-like hierarchy. |
 
 The SLURM wrapper provides deployment defaults through environment variables.
-Set `VENV_PATH`, `STANZA_RESOURCES_DIR`, `NLTK_DATA`, `PAIRTREE_ROOT`,
-`BIBFRAME_ROOT`, `ID_LIST`, `RUN_ROOT`, `OUTPUT_DIR`, `AUDIT_DIR`,
-`METADATA_DIR`, `PENDING_DIR`, or `MAX_ZIP_SIZE_MB` before
+Set `VENV_PATH`, `STANZA_RESOURCES_DIR`, `PAIRTREE_ROOT`, `BIBFRAME_ROOT`,
+`ID_LIST`, `RUN_ROOT`, `OUTPUT_DIR`, `METADATA_DIR`, `PENDING_DIR`,
+`RUN_LOG_DIR`, `TASK_LOG_DIR`, or
+`MAX_ZIP_SIZE_MB` before
 submission to override a default without editing the script.
 
 ## SLURM Execution
 
 `submit.sh` counts nonempty HTIDs and submits a SLURM array through
-`submit_bigred.slurm`. It also submits a small dependent job through
-`consolidate_pending.slurm` to merge task-level pending records after every
-array task finishes successfully.
+`submit_bigred.slurm`. It also submits `finalize_run.slurm` with an `afterany`
+dependency. After the array reaches a terminal state, the finalizer merges the
+pending-volume shards, consolidates the temporary task logs into one run log,
+and removes the temporary files.
 
 ```bash
-mkdir -p logs
 bash submit.sh
 ```
 
@@ -360,7 +266,9 @@ Monitor a submitted job with the scheduler tools provided by the cluster:
 squeue -u "$USER"
 ```
 
-The pipeline uses checkpoint validation: if a target TSV already exists and possesses both a valid header and a final newline byte, that volume is treated as complete and skipped. Use separate output locations or clear prior outputs when intentionally rerunning an HTID with different filter settings.
+The pipeline uses checkpoint validation: if a target TSV already exists and
+possesses both a valid header and a final newline byte, that volume is treated
+as complete and skipped.
 
 ## Recovery and Retry
 
@@ -369,18 +277,17 @@ Completed TSVs with a recognized header and final newline are checkpointed and
 skipped. An existing incomplete TSV is replaced through the atomic export path.
 
 Each array task first writes an internal pending-volume shard containing
-`htid`, `reason_code`, and `detail`. After every array task finishes
-successfully, the dependent consolidation job atomically writes one final file
-and removes that run's shards:
+`htid`, `reason_code`, and `detail`. After the array reaches a terminal state,
+the dependent finalization job consolidates the available shards, atomically
+writes one final file, and removes the consolidated shards:
 
 ```text
 <pending-dir>/pending_volumes.tsv
 ```
 
 The final file contains a header even when no volumes remain pending. It lists
-volume-level failures reported by the pipeline. If an array task is cancelled
-or fails at the scheduler level, consolidation does not run; this prevents an
-incomplete set of shards from replacing the previous final pending file.
+volume-level failures reported by completed tasks. If the finalization job
+fails, inspect its `finalize_<job-id>.log` before retrying consolidation.
 
 Review the reason codes before retrying. Missing source data and unsupported
 languages will normally fail again, while corrected permissions, dependencies,
@@ -394,14 +301,14 @@ awk -F '\t' 'NR > 1 {print $1}' \
 ```
 
 Inspect `reason_code` and `detail`, correct the underlying problem, then submit
-`htids_retry.txt` with the same filter settings and output directory:
+`htids_retry.txt` with the same output directory:
 
 ```bash
 ID_LIST=htids_retry.txt bash submit.sh
 ```
 
-Existing completed volumes will be skipped. A retry with changed filters or
-thresholds must use a new output directory because `run_metadata.json`
+Existing completed volumes will be skipped. A retry with changed runtime
+configuration must use a new output directory because `run_metadata.json`
 intentionally rejects configuration conflicts.
 
 When the retry uses the same `PENDING_DIR`, its consolidation job replaces
@@ -422,16 +329,15 @@ missing or incomplete outputs are processed again.
 ├── requirements.txt
 ├── submit.sh
 ├── submit_bigred.slurm
-├── consolidate_pending.slurm
+├── finalize_run.slurm
 ├── scripts/
+│   ├── consolidate_logs.py
 │   └── consolidate_pending.py
 └── src/
     ├── config.py
     ├── engine_export.py
-    ├── engine_filters.py
     ├── engine_io.py
     ├── engine_nlp.py
-    ├── metrics.py
     └── provenance.py
 ```
 
@@ -439,15 +345,17 @@ missing or incomplete outputs are processed again.
 
 - **Atomic Writes:** Volume TSVs are written to a `.tmp` file first and then atomically renamed to `.tsv` to reduce the risk of data corruption even if a node crashes mid-write.
 - **Lockless Chunking:** Array tasks do not write concurrently to a shared pending file. Each task writes its own pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Optional result summaries remain task-sharded when enabled.
-- **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that your filter configuration exactly matches the existing files. If you change a parameter (like `--min-freq`), the pipeline will abort to prevent silent data corruption.
+- **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that the export configuration matches the existing files. A conflicting configuration causes the pipeline to stop rather than mix incompatible outputs.
 - **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, oversized, and permission-restricted inputs from language, dependency, and tokenizer failures.
-- **Task Logging:** Production logs contain task start, periodic progress, task completion, and fatal task errors rather than one message per volume. Volume failures and their reason codes are retained in the pending-volume TSV.
+- **Task Logging:** Each SLURM array task writes one temporary combined standard-output and standard-error log containing task start, periodic progress, task completion, and fatal errors. A dependent finalization job merges those files into `<run-root>/logs/slurm_<array-job-id>.log` and removes the temporary task logs. Volume failures and their reason codes are retained in the pending-volume TSV.
 - **Page Diagnostics:** Optional task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks when `--summary-dir` is supplied.
-- **Output Metrics:** Optional task result CSVs distinguish total tokens, retained distinct bigram types, retained bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
-- Pairtree ZIPs are streamed page by page rather than loaded as one volume.
+- **Output Metrics:** Optional task result CSVs distinguish total tokens, exported distinct bigram types, exported bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
+- Pairtree ZIPs are streamed in bounded 50-page batches rather than loaded as one volume.
 - Bibframe language metadata is resolved before opening source pages. The pipeline reads a text sample for language detection only when usable metadata is unavailable.
-- Unfiltered production runs count bigrams directly and skip unigram, PMI, singleton, file-size, and other optional summary calculations.
+- Production runs count bigrams directly and skip singleton, file-size, and other optional summary calculations unless `--summary-dir` is supplied.
 - Stanza pipelines are lazily initialized and cached once per worker process.
+- Stanza bulk processing reduces per-page pipeline-call overhead while keeping
+  page-level token sequences separate.
 - The configured ZIP-size guard skips compressed input files above the deployment threshold.
 
 ## Related Documentation
