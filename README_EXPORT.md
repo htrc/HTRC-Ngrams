@@ -224,9 +224,10 @@ reconstruction guarantee.
 When PMI is included, rows are sorted by descending frequency and then
 descending PMI.
 
-Without PMI, rows follow `Counter.most_common()`, which orders primarily by
-descending frequency. Consumers requiring deterministic tie ordering should
-apply an explicit secondary sort.
+Without PMI, rows are exported in the counter's insertion order. The production
+pipeline intentionally avoids a volume-wide frequency sort because row order is
+not part of the dataset contract. Consumers should apply their own explicit sort
+when a particular ordering is required.
 
 ## Run Provenance JSON
 

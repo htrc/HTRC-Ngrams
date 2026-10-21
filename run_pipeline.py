@@ -25,13 +25,12 @@ from src.engine_nlp import (
     StanzaPipelineInitializationError,
     UnsupportedLanguageResolutionError,
     UnsupportedStanzaLanguageError,
-    generate_ngrams_with_counts,
     get_profile,
     resolve_language,
+    resolve_language_from_metadata,
     tokenize_page,
 )
 from src.engine_filters import select_top_standard_stopwords, filter_1_standard_stopword_bigrams, filter2_min_frequency, filter3_pmi, UnsupportedLanguageError, get_stopword_metadata
-from src.metrics import singleton_rate
 from src.provenance import generate_run_provenance, write_run_provenance_once
 from src.engine_export import is_complete_tsv, atomic_write_tsv
 import json
@@ -85,6 +84,13 @@ def sanitize_log_field(value, max_length=None) -> str:
     return sanitized
 
 
+def format_elapsed(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 RESULT_FIELDS = [
     "volume_name",
     "zip_path",
@@ -124,8 +130,7 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
                    enable_f1: bool, enable_f2: bool, enable_f3: bool,
                    min_freq: int = 2, min_pmi: float = 0.0, max_exposure: float = 0.15,
                    max_zip_size_mb: float = 150.0, flat_output: bool = False,
-                   ef_root: Path = None):
-    print(f"\nAnalyzing: {htid}")
+                   ef_root: Path = None, collect_metrics: bool = False):
 
     if flat_output:
         safe_name = htid.replace('/', '=').replace(':', '+')
@@ -137,96 +142,67 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
 
     # Checkpointing: skip if this volume was already processed in a previous run
     if is_complete_tsv(tsv_path):
-        print(f"  ⏭️  SKIP (already done): {volume_name}")
         return {
             "volume_name": volume_name,
             "output_file": str(tsv_path),
             "record_status": "checkpointed_existing",
         }
-    elif tsv_path.exists():
-        print(f"  ⚠️  WARNING: Found incomplete or corrupted TSV {volume_name}. Overwriting.")
 
-    # Size guard: log and skip volumes whose ZIP exceeds safe memory threshold.
+    # Size guard: skip volumes whose ZIP exceeds the configured threshold.
     zip_size_mb = get_zip_size_mb(zip_path)
     if zip_size_mb > max_zip_size_mb:
-        print(f"  ⚠️  OVERSIZED ({zip_size_mb:.1f} MB): {volume_name}")
         raise PendingVolumeError(
             "ZIP_TOO_LARGE",
             f"Compressed ZIP is {zip_size_mb:.1f} MiB; limit is {max_zip_size_mb:.1f} MiB.",
         )
 
-    # --- LANGUAGE DETECTION ---
-    # Fetch 61 pages so resolve_language() can sample interior pages 40-60
-    sample_read_stats = VolumeReadStats()
-    sample_pages = list(
-        itertools.islice(
-            stream_volume_from_zip(zip_path, stats=sample_read_stats),
-            61,
+    lang = resolve_language_from_metadata(htid, ef_root=ef_root)
+    if lang is None:
+        sample_read_stats = VolumeReadStats()
+        sample_pages = list(
+            itertools.islice(
+                stream_volume_from_zip(zip_path, stats=sample_read_stats),
+                61,
+            )
         )
-    )
-    if sample_read_stats.total_page_files == 0:
-        raise PendingVolumeError(
-            "NO_TEXT_PAGES",
-            "The ZIP contains no .txt page files.",
-        )
-    if not sample_pages and sample_read_stats.failed_pages:
-        failure_example = (
-            f" First failure: {sample_read_stats.failed_page_examples[0]}"
-            if sample_read_stats.failed_page_examples
-            else ""
-        )
-        raise PendingVolumeError(
-            "NO_READABLE_PAGES",
-            f"All {sample_read_stats.failed_pages} sampled text pages failed."
-            f"{failure_example}",
-        )
-    if sample_read_stats.failed_pages:
-        print(
-            "  ⚠️  Language sample page-read failures: "
-            f"{sample_read_stats.failed_pages:,}"
-        )
-        for failure in sample_read_stats.failed_page_examples:
-            print(f"      {failure}")
-    if sample_read_stats.decoding_warnings:
-        print(
-            "  ⚠️  Language sample Latin-1 decoding fallbacks: "
-            f"{sample_read_stats.decoding_warnings:,}"
-        )
-    lang = resolve_language(htid, sample_pages, ef_root=ef_root)
+        if sample_read_stats.total_page_files == 0:
+            raise PendingVolumeError(
+                "NO_TEXT_PAGES",
+                "The ZIP contains no .txt page files.",
+            )
+        if not sample_pages and sample_read_stats.failed_pages:
+            failure_example = (
+                f" First failure: {sample_read_stats.failed_page_examples[0]}"
+                if sample_read_stats.failed_page_examples
+                else ""
+            )
+            raise PendingVolumeError(
+                "NO_READABLE_PAGES",
+                f"All {sample_read_stats.failed_pages} sampled text pages failed."
+                f"{failure_example}",
+            )
+        lang = resolve_language(htid, sample_pages)
+
     profile = get_profile(lang)
 
-    # --- STREAMING PROCESSING PASS ---
-    unigram_counts = Counter()
-    bigram_counts  = Counter()
-    total_tokens   = 0
-    page_count     = 0
+    needs_unigrams = enable_f1 or enable_f3 or collect_metrics
+    unigram_counts = Counter() if needs_unigrams else None
+    bigram_counts = Counter()
+    total_tokens = 0
     read_stats = VolumeReadStats()
 
     for page in stream_volume_from_zip(zip_path, stats=read_stats):
-        page_count += 1
         words = tokenize_page(page, profile, lang)
         if not words:
             continue
         total_tokens += len(words)
-        unigram_counts.update(words)
-        bigram_counts.update(generate_ngrams_with_counts(words, 2))
-
-    if read_stats.failed_pages:
-        print(f"  ⚠️  Failed page reads: {read_stats.failed_pages:,}")
-        for failure in read_stats.failed_page_examples:
-            print(f"      {failure}")
-
-    if read_stats.decoding_warnings:
-        print(
-            "  ⚠️  Latin-1 decoding fallbacks: "
-            f"{read_stats.decoding_warnings:,}"
+        if unigram_counts is not None:
+            unigram_counts.update(words)
+        bigram_counts.update(
+            zip(words, itertools.islice(words, 1, None))
         )
-        if read_stats.decoding_warning_examples:
-            examples = ", ".join(read_stats.decoding_warning_examples)
-            print(f"      Example pages: {examples}")
 
     if total_tokens == 0:
-        print(f"  ⚠️  WARNING: No words found in {volume_name}")
         if read_stats.total_page_files == 0:
             raise PendingVolumeError(
                 "NO_TEXT_PAGES",
@@ -248,11 +224,9 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
             "Text pages were read, but tokenization produced no tokens.",
         )
 
-    print(f"  Total readable pages: {page_count:,}")
-    print(f"  Source text pages:    {read_stats.total_page_files:,}")
-    print(f"  Total tokens: {total_tokens:,}")
-
-    original_total_bigrams = sum(bigram_counts.values())
+    original_total_bigrams = (
+        sum(bigram_counts.values()) if enable_f3 else 0
+    )
 
     # --- APPLY FILTER 1 ---
     stopword_meta = {"source": "", "list_code": ""}
@@ -271,10 +245,8 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
         clean_htid = htid.replace('/', '_').replace(':', '_')
         top25_file_path = str(top25_dir / f"{clean_htid}_top25.txt")
         dropped_file_path = str(dropped_dir / f"{clean_htid}_dropped.tsv")
-        original_bigram_count = len(bigram_counts)
         selected_stopwords, top25_with_counts = select_top_standard_stopwords(unigram_counts, lang, top_n=25)
         bigram_counts, dropped_f1 = filter_1_standard_stopword_bigrams(bigram_counts, selected_stopwords)
-        print(f"  Filter 1 (Standard Stopwords): Dropped {original_bigram_count - len(bigram_counts):,} stopword-stopword bigrams.")
 
         # --- EXPORT AUDIT LOGS FOR FILTER 1 ---
         atomic_write_tsv(
@@ -287,28 +259,28 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
             ["w1", "w2", "freq"],
             ([w1, w2, count] for (w1, w2), count in dropped_f1.most_common())
         )
-    else:
-        print("  Filter 1: SKIPPED (disabled via switch)")
 
 
     # --- APPLY FILTER 2 ---
     if enable_f2:
-        bigram_counts, rem_dist, rem_occ = filter2_min_frequency(bigram_counts, min_freq=min_freq)
-        print(f"  Filter 2 (Min Freq >= {min_freq}): Dropped {rem_dist:,} distinct bigrams; retained {len(bigram_counts):,} distinct bigrams.")
-    else:
-        print("  Filter 2: SKIPPED (disabled via switch)")
+        bigram_counts, _, _ = filter2_min_frequency(
+            bigram_counts, min_freq=min_freq
+        )
 
     # --- APPLY FILTER 3 ---
     if enable_f3:
-        f2_survivor_count = len(bigram_counts)
-        scored_results, pmi_dropped = filter3_pmi(bigram_counts, unigram_counts, original_total_bigrams, total_tokens, min_pmi=min_pmi)
-        print(f"  Filter 3 (PMI >= {min_pmi}): Evaluated {f2_survivor_count:,} bigrams; dropped {pmi_dropped:,} rows below the threshold; retained {len(scored_results):,} bigrams.")
+        scored_results, _ = filter3_pmi(
+            bigram_counts,
+            unigram_counts,
+            original_total_bigrams,
+            total_tokens,
+            min_pmi=min_pmi,
+        )
         has_pmi = True
         final_results = scored_results
     else:
-        print("  Filter 3: SKIPPED (disabled via switch)")
         has_pmi = False
-        final_results = bigram_counts.most_common()
+        final_results = bigram_counts.items()
 
     # Export securely formatted filename with atomic writes
     tsv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -320,40 +292,7 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
         rows = ([w1, w2, b_count] for (w1, w2), b_count in final_results)
 
     atomic_write_tsv(tsv_path, headers, rows)
-    print(f"  Exported TSV: {tsv_path.name} ({len(final_results):,} records)")
-    tsv_size_bytes = tsv_path.stat().st_size
-    tsv_size_mb = tsv_size_bytes / (1024 * 1024)
-
-    if has_pmi:
-        final_bigram_counts = Counter(
-            {bigram: count for bigram, count, _ in final_results}
-        )
-    else:
-        final_bigram_counts = Counter(
-            {bigram: count for bigram, count in final_results}
-        )
-
-    singleton_percentage = singleton_rate(final_bigram_counts)
-
-    if has_pmi:
-        total_bigram_occurrences = sum(
-            b_count for _, b_count, _ in final_results
-        )
-    else:
-        total_bigram_occurrences = sum(
-            b_count for _, b_count in final_results
-        )
-
-    distinct_bigram_types = len(final_results)
-    print(f"  Distinct bigram types:     {distinct_bigram_types:,}")
-    print(f"  Total bigram occurrences: {total_bigram_occurrences:,}")
-    print(f"  Singleton percentage:     {singleton_percentage:.1f}%")
-    print(
-        f"  Actual TSV size:           {tsv_size_bytes:,} bytes "
-        f"({tsv_size_mb:.3f} MiB)"
-    )
-
-    return {
+    result = {
         'volume_name':          volume_name,
         'zip_path':             str(zip_path),
         'language':             lang,
@@ -366,7 +305,28 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
         'output_file':          str(tsv_path),
         'top25_stopword_file':  top25_file_path,
         'dropped_bigram_file':  dropped_file_path,
-        'total_pages':          page_count,
+    }
+
+    if not collect_metrics:
+        return result
+
+    if has_pmi:
+        retained_counts = [count for _, count, _ in final_results]
+    else:
+        retained_counts = list(bigram_counts.values())
+
+    distinct_bigram_types = len(retained_counts)
+    total_bigram_occurrences = sum(retained_counts)
+    singleton_percentage = (
+        100.0 * sum(count == 1 for count in retained_counts)
+        / distinct_bigram_types
+        if distinct_bigram_types
+        else 0.0
+    )
+    tsv_size_bytes = tsv_path.stat().st_size
+
+    result.update({
+        'total_pages':          read_stats.yielded_pages,
         'source_text_pages':    read_stats.total_page_files,
         'failed_pages':         read_stats.failed_pages,
         'decoding_warnings':    read_stats.decoding_warnings,
@@ -376,8 +336,9 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
         'total_bigram_occurrences': total_bigram_occurrences,
         'singleton_percentage': round(singleton_percentage, 1),
         'tsv_size_bytes':       tsv_size_bytes,
-        'tsv_size_mb':          round(tsv_size_mb, 3),
-    }
+        'tsv_size_mb':          round(tsv_size_bytes / (1024 * 1024), 3),
+    })
+    return result
 
 # -------------------------------------------------------------------------------------------
 # Main (HPC Entrypoint)
@@ -385,7 +346,7 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path, audit_dir: Path,
 
 def process_one(args_tuple):
     """Module-level wrapper to avoid multiprocessing PicklingError on local functions."""
-    htid, pairtree_root, ef_root, export_dir, audit_dir, enable_f1, enable_f2, enable_f3, min_freq, min_pmi, max_exposure, max_zip_size_mb, flat_output = args_tuple
+    htid, pairtree_root, ef_root, export_dir, audit_dir, enable_f1, enable_f2, enable_f3, min_freq, min_pmi, max_exposure, max_zip_size_mb, flat_output, collect_metrics = args_tuple
     zip_path = htid_to_zip_path(htid, pairtree_root)
 
     def pending(reason_code, detail=""):
@@ -397,7 +358,6 @@ def process_one(args_tuple):
         }
 
     if not zip_path.exists():
-        print(f"  ❌ ZIP not found: {htid}")
         return pending("ZIP_NOT_FOUND", str(zip_path))
 
     try:
@@ -410,47 +370,35 @@ def process_one(args_tuple):
                                 max_exposure=max_exposure,
                                 max_zip_size_mb=max_zip_size_mb,
                                 flat_output=flat_output,
-                                ef_root=ef_root)
+                                ef_root=ef_root,
+                                collect_metrics=collect_metrics)
         result['htid'] = htid
         return {'type': 'success', 'data': result}
     except PendingVolumeError as error:
-        print(f"  ⚠️ SKIPPED {htid}: {error}")
         return pending(error.reason_code, error.detail)
     except CorruptZipError as error:
-        print(f"  ❌ CORRUPT ZIP {htid}: {error.detail}")
         return pending("ZIP_CORRUPT", error.detail)
     except ZipPermissionError as error:
-        print(f"  ❌ ZIP PERMISSION ERROR {htid}: {error.detail}")
         return pending("ZIP_PERMISSION_DENIED", error.detail)
     except ZipReadError as error:
-        print(f"  ❌ ZIP READ ERROR {htid}: {error.detail}")
         return pending("ZIP_READ_ERROR", error.detail)
     except MetadataPermissionError as error:
-        print(f"  ❌ METADATA PERMISSION ERROR {htid}: {error.detail}")
         return pending("METADATA_PERMISSION_DENIED", error.detail)
     except MetadataAccessError as error:
-        print(f"  ❌ METADATA ACCESS ERROR {htid}: {error.detail}")
         return pending("METADATA_ACCESS_ERROR", error.detail)
     except LowConfidenceLanguageError as e:
-        print(f"  🔍 SKIPPED {htid}: {e}")
         return pending("LOW_LANGUAGE_CONFIDENCE", str(e))
     except UnsupportedLanguageResolutionError as e:
-        print(f"  ⚠️ SKIPPED {htid}: {e}")
         return pending("UNSUPPORTED_LANGUAGE", e.language)
     except UnsupportedStanzaLanguageError as e:
-        print(f"  ⚠️ SKIPPED {htid}: {e}")
         return pending("UNSUPPORTED_STANZA_LANGUAGE", e.language)
     except StanzaPipelineInitializationError as e:
-        print(f"  ⚠️ SKIPPED {htid}: {e}")
         return pending("STANZA_PIPELINE_UNAVAILABLE", str(e))
     except UnsupportedLanguageError as e:
-        print(f"  ⚠️ SKIPPED {htid}: Unsupported Stopword Language ({e})")
         return pending("UNSUPPORTED_STOPWORD_LANGUAGE", str(e))
     except ImportError as e:
-        print(f"  ⚠️ Skipping {htid} due to missing dependency: {e}")
         return pending("MISSING_DEPENDENCY", str(e))
     except Exception as e:
-        print(f"  ❌ ERROR analyzing {htid}: {e}")
         detail = f"{type(e).__name__}: {e}"
         return pending("UNEXPECTED_ERROR", detail)
 
@@ -518,13 +466,6 @@ def main():
             f"Bibframe metadata root not found or not a directory: {ef_root}"
         )
 
-    print(f"Target Pairtree root: {pairtree_root}")
-    print(f"Target ID list: {htids_file}")
-    if ef_root is not None:
-        print(f"Bibframe metadata root: {ef_root}")
-    else:
-        print("Bibframe metadata root: not configured; language detection will use text fallback")
-
     export_dir.mkdir(parents=True, exist_ok=True)
     if args.filter1:
         audit_dir.mkdir(parents=True, exist_ok=True)
@@ -537,7 +478,7 @@ def main():
     metadata_path = export_dir / "run_metadata.json"
     current_config = {
         "schema_version": "1.3",
-        "pipeline_version": "2.0.0",
+        "pipeline_version": "2.1.0",
         "pending_schema_version": "1.0",
         "min_freq": args.min_freq,
         "min_pmi": args.min_pmi,
@@ -588,8 +529,6 @@ def main():
                 except OSError:
                     pass
 
-    print(f"Export Directory configured at: {export_dir}")
-
     with open(htids_file, 'r', encoding='utf-8') as f:
         htids = []
         for line in f:
@@ -601,10 +540,6 @@ def main():
     if len(htids) == 0:
         parser.error("The HTID list contains no processable volume IDs")
 
-
-    print(f"Loaded {len(htids)} Volume IDs to process.")
-    print("=" * 70)
-
     # Read SLURM array environment variables
     # SLURM_ARRAY_TASK_ID = which task number this is (0, 1, 2...)
     # SLURM_ARRAY_TASK_COUNT = total number of tasks (e.g. 1000)
@@ -614,7 +549,6 @@ def main():
 
     # Stride slicing: each task picks every Nth volume from the master list
     my_htids = htids[task_id::total_tasks]
-    print(f"[Task {task_id}/{total_tasks}] Processing {len(my_htids)} volumes using {n_workers} workers.")
 
     # Generate Run Provenance Manifest BEFORE worker execution so failed runs are captured
     slurm_array_id = os.environ.get("SLURM_ARRAY_JOB_ID")
@@ -633,8 +567,16 @@ def main():
     )
     write_run_provenance_once(prov_data, metadata_dir)
 
-    # Build argument tuples for unordered worker processing
-    task_args = [(htid, pairtree_root, ef_root, export_dir, audit_dir, args.filter1, args.filter2, args.filter3, args.min_freq, args.min_pmi, args.max_exposure, args.max_zip_size_mb, args.flat_output) for htid in my_htids]
+    collect_metrics = summary_root is not None
+    task_args = [
+        (
+            htid, pairtree_root, ef_root, export_dir, audit_dir,
+            args.filter1, args.filter2, args.filter3, args.min_freq,
+            args.min_pmi, args.max_exposure, args.max_zip_size_mb,
+            args.flat_output, collect_metrics,
+        )
+        for htid in my_htids
+    ]
 
     # Task-level pending records and optional summary output
     task_logs_dir = export_dir / "task_logs" / run_id
@@ -713,12 +655,14 @@ def main():
     processed_count = 0
     checkpoint_count = 0
     pending_count = 0
+    attempted_count = 0
+    progress_interval = 1000
+    task_started_at = time.monotonic()
 
-    sum_tokens = 0
-    sum_distinct_bigram_types = 0
-    sum_bigram_occurrences = 0
-    sum_singleton_percentage = 0
-    sum_tsv_size_bytes = 0
+    print(
+        f"Task {task_id}/{total_tasks} started: {len(my_htids)} HTIDs, "
+        f"{n_workers} workers."
+    )
 
     with ExitStack() as stack:
         success_f = None
@@ -751,8 +695,10 @@ def main():
         # Process this task's volumes using all available CPUs
         with Pool(processes=n_workers) as pool:
             for r in pool.imap_unordered(process_one, task_args):
+                attempted_count += 1
                 if r is None:
-                    continue
+                    raise RuntimeError("A worker returned no result.")
+
                 if r['type'] == 'success':
                     data = r['data']
                     data['run_id'] = run_id
@@ -764,10 +710,8 @@ def main():
                         success_writer is not None
                         and htid in existing_result_htids
                     ):
-                        print(f"  Metadata already recorded for {htid}; skipping duplicate row.")
-                        continue
-
-                    if success_writer is not None:
+                        pass
+                    elif success_writer is not None:
                         success_writer.writerow({
                             field: data.get(field, "")
                             for field in RESULT_FIELDS
@@ -781,12 +725,6 @@ def main():
                     else:
                         processed_count += 1
 
-                        sum_tokens += data["total_tokens"]
-                        sum_distinct_bigram_types += data["distinct_bigram_types"]
-                        sum_bigram_occurrences += data["total_bigram_occurrences"]
-                        sum_singleton_percentage += data["singleton_percentage"]
-                        sum_tsv_size_bytes += data["tsv_size_bytes"]
-
                 elif r['type'] == 'pending':
                     safe_htid = sanitize_log_field(r["htid"])
                     safe_reason_code = sanitize_log_field(r["reason_code"])
@@ -797,59 +735,36 @@ def main():
 
                     pending_record = (safe_htid, safe_reason_code)
 
-                    if pending_record in existing_pending_records:
-                        print(
-                            f"  Pending metadata already recorded for "
-                            f"{r['htid']}; skipping duplicate row."
-                        )
-                        continue
-
-                    pending_writer.writerow({
-                        "htid": safe_htid,
-                        "reason_code": safe_reason_code,
-                        "detail": safe_detail,
-                    })
-                    pending_f.flush()
-
-
-                    existing_pending_records.add(pending_record)
+                    if pending_record not in existing_pending_records:
+                        pending_writer.writerow({
+                            "htid": safe_htid,
+                            "reason_code": safe_reason_code,
+                            "detail": safe_detail,
+                        })
+                        pending_f.flush()
+                        existing_pending_records.add(pending_record)
                     pending_count += 1
 
-    if result_count == 0 and pending_count == 0:
-        print("\nNo new task metadata records were written.")
-        return
+                else:
+                    raise RuntimeError(
+                        f"Worker returned unknown result type: {r.get('type')}"
+                    )
 
-    print("\n" + "=" * 70)
-    print(f"Task {task_id} complete.")
-    print(f"  Newly processed volumes: {processed_count}")
-    print(f"  Existing checkpointed volumes: {checkpoint_count}")
-    print(f"  Pending or failed volumes: {pending_count}")
+                if attempted_count % progress_interval == 0:
+                    elapsed = format_elapsed(time.monotonic() - task_started_at)
+                    print(
+                        f"Task {task_id} progress: {attempted_count}/"
+                        f"{len(my_htids)} attempted, {result_count} successful, "
+                        f"{pending_count} pending, elapsed {elapsed}."
+                    )
 
-    if result_count > 0 and success_csv_path is not None:
-        print(f"  Result metadata: {success_csv_path}")
-
-    if pending_count > 0:
-        print(f"  Pending log: {pending_tsv_path}")
-
-    if processed_count > 0:
-        avg_tokens = sum_tokens / processed_count
-        avg_bigram_singletons = (
-            sum_singleton_percentage / processed_count
-        )
-        total_tsv_size_mb = sum_tsv_size_bytes / (1024 * 1024)
-
-        print(f"\nSUMMARY ACROSS {processed_count} NEWLY PROCESSED VOLUME(S)")
-        print(f"  Total tokens:                         {sum_tokens:,}")
-        print(f"  Average tokens per volume:            {avg_tokens:,.0f}")
-        print(f"  Sum of volume-level bigram types:     {sum_distinct_bigram_types:,}")
-        print(f"  Total bigram occurrences:             {sum_bigram_occurrences:,}")
-        print(f"  Mean volume singleton percentage:     {avg_bigram_singletons:.1f}%")
-        print(
-            "  Total actual TSV size:                "
-            f"{sum_tsv_size_bytes:,} bytes ({total_tsv_size_mb:.3f} MiB)"
-        )
-
-    print("=" * 70)
+    elapsed = format_elapsed(time.monotonic() - task_started_at)
+    print(
+        f"Task {task_id} completed: {attempted_count} attempted, "
+        f"{result_count} successful ({processed_count} new, "
+        f"{checkpoint_count} checkpointed), {pending_count} pending, "
+        f"elapsed {elapsed}."
+    )
 
 if __name__ == "__main__":
     main()

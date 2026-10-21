@@ -441,9 +441,12 @@ missing or incomplete outputs are processed again.
 - **Lockless Chunking:** Array tasks do not write concurrently to a shared pending file. Each task writes its own pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Optional result summaries remain task-sharded when enabled.
 - **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that your filter configuration exactly matches the existing files. If you change a parameter (like `--min-freq`), the pipeline will abort to prevent silent data corruption.
 - **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, oversized, and permission-restricted inputs from language, dependency, and tokenizer failures.
-- **Page Diagnostics:** Up to five page examples are printed in the task log for each warning category. Optional task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks when `--summary-dir` is supplied.
+- **Task Logging:** Production logs contain task start, periodic progress, task completion, and fatal task errors rather than one message per volume. Volume failures and their reason codes are retained in the pending-volume TSV.
+- **Page Diagnostics:** Optional task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks when `--summary-dir` is supplied.
 - **Output Metrics:** Optional task result CSVs distinguish total tokens, retained distinct bigram types, retained bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
 - Pairtree ZIPs are streamed page by page rather than loaded as one volume.
+- Bibframe language metadata is resolved before opening source pages. The pipeline reads a text sample for language detection only when usable metadata is unavailable.
+- Unfiltered production runs count bigrams directly and skip unigram, PMI, singleton, file-size, and other optional summary calculations.
 - Stanza pipelines are lazily initialized and cached once per worker process.
 - The configured ZIP-size guard skips compressed input files above the deployment threshold.
 

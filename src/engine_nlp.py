@@ -219,37 +219,39 @@ def get_lang_from_jsonld(jsonld_path) -> str:
         raise MetadataAccessError(jsonld_path, str(error)) from error
     return None
 
+def resolve_language_from_metadata(htid: str, ef_root=None):
+    """Return a supported metadata language, or None when metadata is absent."""
+    if ef_root is None:
+        return None
+
+    from .engine_io import find_jsonld_path
+
+    jsonld_path = find_jsonld_path(htid, ef_root)
+    if jsonld_path is None:
+        return None
+
+    metadata_lang = get_lang_from_jsonld(jsonld_path)
+    if not metadata_lang:
+        return None
+
+    canonical_lang = canonicalize_language(metadata_lang)
+    if not is_supported_language(canonical_lang):
+        raise UnsupportedLanguageResolutionError(
+            metadata_lang, "JSON-LD metadata"
+        )
+
+    return canonical_lang
+
+
 def resolve_language(htid: str, pages: list, ef_root=None):
     """
     Determine the optimal language profile for the volume.
     First checks metadata, then falls back to langid sampling.
     Returns a canonical supported language code or raises a typed error.
     """
-    print(f"  [Language Resolver] Initializing for '{htid}'...")
-
-    # --- STAGE 1: JSON-LD METADATA (EF Dataset) ---
-    if ef_root is not None:
-        from .engine_io import find_jsonld_path
-        jsonld_path = find_jsonld_path(htid, ef_root)
-        if jsonld_path:
-            print(f"  [Language Resolver] 🔎 STAGE 1: Found file at {jsonld_path}, attempting to extract language...")
-            metadata_lang = get_lang_from_jsonld(jsonld_path)
-            if metadata_lang:
-                canonical_lang = canonicalize_language(metadata_lang)
-                if not is_supported_language(canonical_lang):
-                    raise UnsupportedLanguageResolutionError(
-                        metadata_lang, "JSON-LD metadata"
-                    )
-                print(f"  [Language Resolver] ⚡ STAGE 1 SUCCESS: JSON-LD metadata → '{canonical_lang}'")
-                return canonical_lang
-            else:
-                print(
-                    "  [Language Resolver] ❌ STAGE 1 MISS: "
-                    "File found, but 'language' key missing."
-                )
-        else:
-            print(f"  [Language Resolver] ❌ STAGE 1 MISS: No physical JSON-LD file found for {htid}.")
-        print(f"  [Language Resolver] Moving to Stage 2...")
+    metadata_lang = resolve_language_from_metadata(htid, ef_root)
+    if metadata_lang is not None:
+        return metadata_lang
 
     # --- FALLBACK: langid DETECTION ---
     # Sample pages 40-60 for long books. Short books use all available pages so
@@ -331,11 +333,9 @@ def resolve_language(htid: str, pages: list, ef_root=None):
         if not is_supported_language(best_lang):
             raise UnsupportedLanguageResolutionError(best_lang, "langid")
 
-        print(f"  [Language Resolver] 🔍 STAGE 2 SUCCESS: 'langid' ML profiled base text as '{best_lang}' (Confidence: {confidence:.2f})")
         return best_lang
 
     except ImportError as error:
-        print("  [Language Resolver] ⚠️ STAGE 2 MISS: 'langid' is not installed.")
         raise ImportError(
             "The langid package is required when usable language metadata is unavailable."
         ) from error
@@ -435,11 +435,10 @@ def tokenize_page(text: str, profile: dict, lang: str = ""):
 
 def generate_ngrams_with_counts(words, n):
     """Generate n-grams and return Counter object."""
-    ngrams = []
     if n == 1:
         return Counter((token,) for token in words)
 
-    for i in range(len(words) - n + 1):
-        ngram = tuple(words[i:i+n])
-        ngrams.append(ngram)
-    return Counter(ngrams)
+    return Counter(
+        tuple(words[index:index + n])
+        for index in range(len(words) - n + 1)
+    )
