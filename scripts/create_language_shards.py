@@ -17,6 +17,44 @@ from src.engine_io import htid_to_zip_path
 
 
 def load_records(input_path: Path, limit: int, sample_seed: int = None):
+    if sample_seed is not None and not limit:
+        raise RuntimeError("--sample-seed requires a positive --limit")
+
+    if sample_seed is not None:
+        reservoir = []
+        random_generator = random.Random(sample_seed)
+        eligible_count = 0
+
+        with open(input_path, "r", encoding="utf-8", newline="") as file:
+            reader = csv.reader(file, delimiter="\t")
+            for row in reader:
+                if not row:
+                    continue
+                htid = row[0].strip()
+                language = row[1].strip().lower() if len(row) > 1 else ""
+                if not htid or htid.lower() == "htid":
+                    continue
+
+                eligible_count += 1
+                record = (htid, canonicalize_language(language))
+                if len(reservoir) < limit:
+                    reservoir.append(record)
+                    continue
+
+                replacement = random_generator.randrange(eligible_count)
+                if replacement < limit:
+                    reservoir[replacement] = record
+
+        if eligible_count < limit:
+            raise RuntimeError(
+                f"Requested {limit:,} records but found only {eligible_count:,}."
+            )
+        if len({htid for htid, _ in reservoir}) != len(reservoir):
+            raise RuntimeError(
+                "The sampled Hathifile records contain duplicate HTIDs."
+            )
+        return reservoir
+
     records = []
     seen = set()
 
@@ -35,13 +73,6 @@ def load_records(input_path: Path, limit: int, sample_seed: int = None):
             records.append((htid, canonicalize_language(language)))
             if limit and sample_seed is None and len(records) == limit:
                 break
-
-    if sample_seed is not None and limit:
-        if len(records) < limit:
-            raise RuntimeError(
-                f"Requested {limit:,} unique records but found only {len(records):,}."
-            )
-        records = random.Random(sample_seed).sample(records, limit)
 
     return records
 

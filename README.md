@@ -12,7 +12,7 @@ The pipeline combines:
 - page-level text cleanup;
 - direct, unfiltered bigram counting;
 - run-level provenance metadata; and
-- checkpointed TSV export.
+- checkpointed, gzip-compressed TSV export.
 
 This repository is under active research and data-quality review. The software
 does not provide a guarantee against reconstruction or proof of compliance with
@@ -26,16 +26,16 @@ For each HTID, the pipeline:
 1. Resolves the Pairtree ZIP path.
 2. Resolves one language for the volume from JSON-LD metadata when available.
 3. Uses `langid` as a constrained fallback across the 27 supported languages.
-4. Streams the volume into bounded batches of 50 pages.
+4. Streams the volume into bounded batches of 100 pages by default.
 5. Removes recognized scanner boilerplate pages.
 6. Examines likely header and footer lines at the beginning and end of a page.
 7. Recombines words split by a line-final hyphen.
 8. Removes selected zero-width, superscript, and subscript characters.
 9. Applies Hebrew-specific diacritic removal where applicable.
-10. Bulk-tokenizes up to 50 cleaned pages with the configured Stanza tokenizer
+10. Bulk-tokenizes up to 100 cleaned pages with the configured Stanza tokenizer
     and, where available, MWT processor.
 11. Counts adjacent bigrams within each page without filtering them.
-12. Writes the volume TSV, optional result metadata, and run provenance.
+12. Writes the volume `.tsv.gz`, optional result metadata, and run provenance.
 
 Stanza returns one document for each page in the batch. Pages remain
 independent, and bigrams do not cross page boundaries.
@@ -123,7 +123,7 @@ documented in [`limitations.md`](limitations.md).
 
 ## Generated Files
 
-The primary output is one volume-level bigram TSV per successfully processed
+The primary output is one gzip-compressed volume-level bigram TSV per successfully processed
 HTID. Operational deployments also create provenance manifests,
 pending-volume records, and scheduler logs. Optional task-sharded result
 summaries are written only when `--summary-dir` is supplied. These supporting
@@ -230,6 +230,8 @@ python3 run_pipeline.py \
   --output-dir /path/to/output \
   --metadata-dir /path/to/metadata \
   --pending-dir /path/to/pending \
+  --status-dir /path/to/status \
+  --gzip-level 1 \
   --max-zip-size-mb 150
 ```
 
@@ -240,10 +242,12 @@ python3 run_pipeline.py \
 | `--pairtree` | Yes | Pairtree root containing source ZIP volumes. |
 | `--id-list` | Yes | UTF-8 text file containing one HTID per line. |
 | `--bibframe-root` | No | Root containing HTRC Bibframe JSON-LD metadata. If omitted, language resolution uses text fallback. |
-| `--output-dir` | Yes | Directory to save volume TSVs and `run_metadata.json`. |
+| `--output-dir` | Yes | Directory to save volume `.tsv.gz` files and `run_metadata.json`. |
 | `--metadata-dir` | Yes | Directory to save global run provenance metadata. |
 | `--summary-dir` | No | Enables task-sharded summary CSV files in the specified directory. If omitted, no summary CSV files are written. |
 | `--pending-dir` | No | Base directory for task-sharded pending-volume files. Defaults under `--output-dir`. |
+| `--status-dir` | No | Directory for compact task-completion records used for campaign reconciliation. |
+| `--gzip-level` | No | Gzip compression level from `0` through `9`. Default: `1`. |
 | `--max-zip-size-mb` | No | Skip source ZIPs larger than this many MiB. Default: `150`. |
 | `--flat-output` | No | Writes volume TSVs into one directory instead of a Pairtree-like hierarchy. |
 | `--input-is-task-shard` | No | Processes the complete input file because it was assigned specifically to the current SLURM task. |
@@ -252,7 +256,7 @@ python3 run_pipeline.py \
 The SLURM wrapper provides deployment defaults through environment variables.
 Set `VENV_PATH`, `STANZA_RESOURCES_DIR`, `PAIRTREE_ROOT`, `BIBFRAME_ROOT`,
 `ID_LIST`, `SHARD_MANIFEST`, `FRESH_RUN`, `RUN_ROOT`, `OUTPUT_DIR`, `METADATA_DIR`, `PENDING_DIR`,
-`RUN_LOG_DIR`, `TASK_LOG_DIR`, or
+`RUN_LOG_DIR`, `TASK_LOG_DIR`, `STATUS_DIR`, `GZIP_LEVEL`, or
 `MAX_ZIP_SIZE_MB` before
 submission to override a default without editing the script.
 
@@ -291,7 +295,7 @@ using compressed ZIP size as a workload estimate and records that size in the
 shard. Missing Pairtree volumes remain in the input and are reported by the
 pipeline as `ZIP_NOT_FOUND`.
 
-Submit the generated manifest with a new run root:
+For a small single-array run, submit the generated manifest with a new run root:
 
 ```bash
 export SHARD_MANIFEST=/path/to/test5_shards/shards_manifest.txt
@@ -299,6 +303,25 @@ export RUN_ROOT="outputs/test5_$(date +%Y%m%d_%H%M%S)"
 export FRESH_RUN=1
 bash submit.sh
 ```
+
+Large runs use bounded waves so the collection never attempts to submit every
+shard as one SLURM array. `submit_campaign.sh` submits one wave, limits active
+tasks, validates every task after completion, and submits the next wave only
+when the current wave has complete terminal accounting. The first wave writes
+one campaign-level provenance manifest; later waves reuse the same run context:
+
+```bash
+export SHARD_MANIFEST=/path/to/shards/shards_manifest.txt
+export RUN_ROOT="outputs/production_run"
+export CAMPAIGN_NAME=initial
+export WAVE_SIZE=900
+export MAX_CONCURRENT_TASKS=200
+export FRESH_RUN=1
+bash submit_campaign.sh
+```
+
+For a 30,000-volume rehearsal, a smaller wave size such as `200` exercises
+multiple wave transitions while retaining the production control flow.
 
 Each manifest entry becomes one SLURM array task, and that task reads only its
 assigned shard. Within each task, `SLURM_CPUS_PER_TASK` determines the maximum
@@ -312,16 +335,17 @@ Monitor a submitted job with the scheduler tools provided by the cluster:
 squeue -u "$USER"
 ```
 
-The pipeline uses checkpoint validation: if a target TSV already exists and
-possesses both a valid header and a final newline byte, that volume is treated
-as complete and skipped. `FRESH_RUN=1` disables these checks only after
-`submit.sh` verifies that the requested run root does not already exist.
+The pipeline uses checkpoint validation. An atomically published `.tsv.gz`
+with a valid gzip signature and TSV header is treated as complete and skipped.
+`FRESH_RUN=1` disables these checks for a guaranteed-new campaign. Recovery and
+pending-volume campaigns must use `FRESH_RUN=0`.
 
 ## Recovery and Retry
 
 The pipeline is designed to resume after a cancelled job or node failure.
-Completed TSVs with a recognized header and final newline are checkpointed and
-skipped. An existing incomplete TSV is replaced through the atomic export path.
+Completed `.tsv.gz` files with a recognized gzip signature and TSV header are
+checkpointed and skipped. A missing or invalid output is replaced through the
+atomic export path.
 
 Each array task first writes an internal pending-volume shard containing
 `htid`, `reason_code`, and `detail`. After the array reaches a terminal state,
@@ -332,29 +356,37 @@ writes one final file, and removes the consolidated shards:
 <pending-dir>/pending_volumes.tsv
 ```
 
-The final file contains a header even when no volumes remain pending. It lists
-volume-level failures reported by completed tasks. If the finalization job
-fails, inspect its `finalize_<job-id>.log` before retrying consolidation.
+For wave campaigns, every wave first writes an immutable pending report under
+`pending/campaigns/<campaign-name>/waves/`. The final wave validates that
+successful plus pending volumes equals the selected input count, then writes
+the single campaign-wide `pending/pending_volumes.tsv`. The final file contains
+a header even when no volumes remain pending.
 
 Review the reason codes before retrying. Missing source data and unsupported
 languages will normally fail again, while corrected permissions, dependencies,
-resources, or transient read problems may be retryable. Create a one-HTID-per-
-line retry list from the final file:
+resources, or transient read problems may be retryable. Recover language and
+ZIP-size hints from the original shard manifest:
 
 ```bash
-awk -F '\t' 'NR > 1 {print $1}' \
-  outputs/current_run/pending/pending_volumes.tsv \
-  > htids_retry.txt
+python3 scripts/create_retry_shards.py \
+  --pending-file outputs/production_run/pending/pending_volumes.tsv \
+  --source-manifest /path/to/original/shards_manifest.txt \
+  --output-dir /path/to/retry_shards \
+  --target-volumes 100
 ```
 
-Inspect `reason_code` and `detail`, correct the underlying problem, then submit
-`htids_retry.txt` with the same output directory:
+Submit the retry as a new campaign name while preserving the original run root:
 
 ```bash
-ID_LIST=htids_retry.txt bash submit.sh
+export SHARD_MANIFEST=/path/to/retry_shards/shards_manifest.txt
+export RUN_ROOT="outputs/production_run"
+export CAMPAIGN_NAME="retry_001"
+export FRESH_RUN=0
+bash submit_campaign.sh
 ```
 
-Existing completed volumes will be skipped. A retry with changed runtime
+Successful retry outputs are written into the original `bigrams/` Pairtree.
+Existing completed volumes are skipped. A retry with changed runtime
 configuration must use a new output directory because `run_metadata.json`
 intentionally rejects configuration conflicts.
 
@@ -375,12 +407,18 @@ missing or incomplete outputs are processed again.
 ├── run_pipeline.py
 ├── requirements.txt
 ├── submit.sh
+├── submit_campaign.sh
+├── submit_wave.sh
 ├── submit_bigred.slurm
 ├── finalize_run.slurm
 ├── scripts/
 │   ├── consolidate_logs.py
 │   ├── consolidate_pending.py
-│   └── create_language_shards.py
+│   ├── consolidate_status.py
+│   ├── create_language_shards.py
+│   ├── create_retry_shards.py
+│   ├── create_wave_manifests.py
+│   └── finalize_campaign.py
 └── src/
     ├── config.py
     ├── engine_export.py
@@ -391,14 +429,14 @@ missing or incomplete outputs are processed again.
 
 ## Operational Notes
 
-- **Atomic Writes:** Volume TSVs are written to a `.tmp` file first and then atomically renamed to `.tsv` to reduce the risk of data corruption even if a node crashes mid-write.
+- **Atomic Compressed Writes:** Volume data is written directly to a temporary gzip stream, flushed and synchronized, validated, and atomically renamed to `.tsv.gz`. No uncompressed duplicate is created.
 - **Lockless Chunking:** Array tasks do not write concurrently to a shared pending file. Each task writes its own pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Optional result summaries remain task-sharded when enabled.
 - **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that the export configuration matches the existing files. A conflicting configuration causes the pipeline to stop rather than mix incompatible outputs.
 - **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, oversized, and permission-restricted inputs from language, dependency, and tokenizer failures.
 - **Task Logging:** Each SLURM array task writes one temporary combined standard-output and standard-error log containing task start, periodic progress, task completion, and fatal errors. A dependent finalization job merges those files into `<run-root>/logs/slurm_<array-job-id>.log` and removes the temporary task logs. Volume failures and their reason codes are retained in the pending-volume TSV.
 - **Page Diagnostics:** Optional task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks when `--summary-dir` is supplied.
 - **Output Metrics:** Optional task result CSVs distinguish total tokens, exported distinct bigram types, exported bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
-- Pairtree ZIPs are streamed in bounded 50-page batches rather than loaded as one volume.
+- Pairtree ZIPs are streamed in bounded 100-page batches rather than loaded as one volume.
 - Bibframe language metadata is resolved before opening source pages. The pipeline reads a text sample for language detection only when usable metadata is unavailable.
 - Production runs count bigrams directly and skip singleton, file-size, and other optional summary calculations unless `--summary-dir` is supplied.
 - Stanza pipelines are lazily initialized and cached once per worker process.

@@ -10,6 +10,7 @@ RUN_ROOT="${RUN_ROOT:-outputs/current_run}"
 PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-$RUN_ROOT/logs}"
 TASK_LOG_DIR="${TASK_LOG_DIR:-$RUN_LOG_DIR/tasks}"
+STATUS_DIR="${STATUS_DIR:-$RUN_ROOT/status}"
 
 if [ -n "$SHARD_MANIFEST" ]; then
     if [ ! -f "$SHARD_MANIFEST" ]; then
@@ -51,7 +52,7 @@ fi
 echo "📦 Submitting $INPUT_DESCRIPTION across $((ARRAY_MAX+1)) task(s)..."
 mkdir -p "$TASK_LOG_DIR"
 ARRAY_SUBMISSION=$(sbatch --parsable \
-    --export=ALL,ID_LIST="$ID_LIST",SHARD_MANIFEST="$SHARD_MANIFEST",INPUT_MODE="$INPUT_MODE",FRESH_RUN="$FRESH_RUN",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR" \
+    --export=ALL,ID_LIST="$ID_LIST",SHARD_MANIFEST="$SHARD_MANIFEST",INPUT_MODE="$INPUT_MODE",FRESH_RUN="$FRESH_RUN",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR",STATUS_DIR="$STATUS_DIR" \
     --output="$TASK_LOG_DIR/task_%A_%a.log" \
     --array=0-$ARRAY_MAX \
     submit_bigred.slurm)
@@ -60,7 +61,7 @@ echo "✅ Array job: $ARRAY_JOB_ID"
 
 FINALIZATION_SUBMISSION=$(sbatch --parsable \
     --dependency=afterany:"$ARRAY_JOB_ID" \
-    --export=ALL,PENDING_DIR="$PENDING_DIR",PENDING_RUN_ID="slurm_$ARRAY_JOB_ID",TASK_LOG_DIR="$TASK_LOG_DIR",RUN_LOG_DIR="$RUN_LOG_DIR",ARRAY_JOB_ID="$ARRAY_JOB_ID" \
+    --export=ALL,PENDING_DIR="$PENDING_DIR",STATUS_DIR="$STATUS_DIR",PENDING_RUN_ID="slurm_$ARRAY_JOB_ID",TASK_LOG_DIR="$TASK_LOG_DIR",RUN_LOG_DIR="$RUN_LOG_DIR",ARRAY_JOB_ID="$ARRAY_JOB_ID",WAVE_TASK_COUNT="$((ARRAY_MAX+1))" \
     --output="$RUN_LOG_DIR/finalize_%j.log" \
     finalize_run.slurm)
 FINALIZATION_JOB_ID=${FINALIZATION_SUBMISSION%%;*}

@@ -17,6 +17,7 @@ created.
 | Property | Value |
 | --- | --- |
 | Encoding | UTF-8 |
+| Compression | Gzip, direct atomic export (`.tsv.gz`) |
 | Field delimiter | Tab |
 | Record delimiter | Newline |
 | Header | Present |
@@ -78,7 +79,7 @@ path.
 - Inline hyphens become independent `-` tokens.
 - Words split by a line-final hyphen are recombined before tokenization.
 - Stanza MWT processing can expand contractions and clitics.
-- Pages are sent to Stanza in batches of up to 50, but Stanza returns each page
+- Pages are sent to Stanza in batches of up to 100, but Stanza returns each page
   separately and bigrams are generated independently for each page.
 
 Examples:
@@ -149,10 +150,17 @@ Current fields include:
 | `stanza_version` | Installed Stanza package version. |
 | `langid_version` | Installed langid package version. |
 | `export_policy` | Export policy used for the run; currently `unfiltered`. |
+| `output_format` | Export container; currently `tsv.gz`. |
+| `gzip_level` | Gzip compression level used by the run. |
 | `stanza_models` | Tokenizer and MWT package names and manifest MD5 values. |
 
 The first SLURM array task writes the shared manifest once for the run. Atomic
 file creation prevents a partial manifest from being published.
+
+Wave campaigns also publish compact status JSON. Each wave records selected,
+attempted, successful, checkpointed, and pending counts. The final
+`status/campaigns/<campaign-name>/campaign_summary.json` is written only after
+the counts reconcile with the campaign manifest.
 
 ## Operational Diagnostics
 
@@ -239,8 +247,14 @@ Use a CSV-aware reader configured with a tab delimiter.
 
 ```python
 import csv
+import gzip
 
-with open("volume.tsv", "r", encoding="utf-8", newline="") as input_file:
+with gzip.open(
+    "volume.tsv.gz",
+    "rt",
+    encoding="utf-8",
+    newline="",
+) as input_file:
     reader = csv.DictReader(input_file, delimiter="\t")
     for row in reader:
         word1 = row["w1"]
@@ -254,9 +268,10 @@ with open("volume.tsv", "r", encoding="utf-8", newline="") as input_file:
 import pandas as pd
 
 data = pd.read_csv(
-    "volume.tsv",
+    "volume.tsv.gz",
     sep="\t",
     encoding="utf-8",
+    compression="gzip",
     keep_default_na=False,
 )
 ```
@@ -268,7 +283,7 @@ to missing values.
 
 ```r
 data <- read.delim(
-  "volume.tsv",
+  gzfile("volume.tsv.gz", open = "rt"),
   sep = "\t",
   quote = "\"",
   fileEncoding = "UTF-8",
@@ -283,8 +298,14 @@ Validate a file with Python's TSV parser:
 
 ```python
 import csv
+import gzip
 
-with open("volume.tsv", encoding="utf-8", newline="") as input_file:
+with gzip.open(
+    "volume.tsv.gz",
+    "rt",
+    encoding="utf-8",
+    newline="",
+) as input_file:
     rows = csv.reader(input_file, delimiter="\t")
     header = next(rows)
     expected_fields = len(header)

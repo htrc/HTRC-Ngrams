@@ -35,7 +35,7 @@ from src.engine_nlp import (
     tokenize_page_batch,
 )
 from src.provenance import generate_run_provenance, write_run_provenance_once
-from src.engine_export import is_complete_tsv, atomic_write_tsv
+from src.engine_export import atomic_write_json, atomic_write_tsv, is_complete_tsv
 import json
 import sys
 
@@ -170,18 +170,18 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
                    max_zip_size_mb: float = 150.0, flat_output: bool = False,
                    ef_root: Path = None, collect_metrics: bool = False,
                    language_hint: str = None, check_existing: bool = True,
-                   zip_size_bytes_hint: int = None):
+                   zip_size_bytes_hint: int = None, gzip_level: int = 1):
 
     volume_started_at = time.perf_counter()
     performance = Counter()
 
     if flat_output:
         safe_name = htid.replace('/', '=').replace(':', '+')
-        tsv_path = output_dir / f"{safe_name}.tsv"
+        tsv_path = output_dir / f"{safe_name}.tsv.gz"
     else:
         # Pairtree-mirrored output structure
         tsv_path = htid_to_tsv_path(htid, output_dir)
-    volume_name = tsv_path.stem
+    volume_name = tsv_path.name.removesuffix(".tsv.gz")
 
     # Checkpointing: skip if this volume was already processed in a previous run
     checkpoint_started_at = time.perf_counter()
@@ -320,7 +320,9 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
     headers = ["w1", "w2", "freq"]
     rows = ([w1, w2, count] for (w1, w2), count in bigram_counts.items())
 
-    performance.update(atomic_write_tsv(tsv_path, headers, rows))
+    performance.update(
+        atomic_write_tsv(tsv_path, headers, rows, gzip_level=gzip_level)
+    )
     performance["volume_seconds"] += time.perf_counter() - volume_started_at
     result = {
         'volume_name':          volume_name,
@@ -367,7 +369,7 @@ def process_one(args_tuple):
     """Module-level wrapper to avoid multiprocessing PicklingError on local functions."""
     (
         htid, language_hint, zip_size_bytes_hint, pairtree_root, ef_root, export_dir,
-        max_zip_size_mb, flat_output, collect_metrics, check_existing,
+        max_zip_size_mb, flat_output, collect_metrics, check_existing, gzip_level,
     ) = args_tuple
     zip_path = htid_to_zip_path(htid, pairtree_root)
     worker_started_at = time.perf_counter()
@@ -391,7 +393,8 @@ def process_one(args_tuple):
                                 collect_metrics=collect_metrics,
                                 language_hint=language_hint,
                                 check_existing=check_existing,
-                                zip_size_bytes_hint=zip_size_bytes_hint)
+                                zip_size_bytes_hint=zip_size_bytes_hint,
+                                gzip_level=gzip_level)
         result['htid'] = htid
         return {'type': 'success', 'data': result}
     except PendingVolumeError as error:
@@ -453,10 +456,14 @@ def main():
     parser.add_argument("--pending-dir", type=Path, help="Directory for task-sharded pending-volume files (default: <output-dir>/task_logs/<run-id>/pending)")
     parser.add_argument("--input-is-task-shard", action="store_true", help="Process the entire input file because it was assigned specifically to this SLURM task")
     parser.add_argument("--skip-checkpoints", action="store_true", help="Skip existing-output checks for a guaranteed-new output directory")
+    parser.add_argument("--gzip-level", type=int, default=1, help="gzip compression level for .tsv.gz outputs (0-9; default: 1)")
+    parser.add_argument("--status-dir", type=Path, help="Directory for task completion records used by campaign validation")
     args = parser.parse_args()
 
     if args.max_zip_size_mb <= 0:
         parser.error("--max-zip-size-mb must be greater than zero")
+    if not 0 <= args.gzip_level <= 9:
+        parser.error("--gzip-level must be between 0 and 9")
 
     pairtree_root = args.pairtree
     htids_file = getattr(args, 'id_list')
@@ -464,6 +471,7 @@ def main():
     metadata_dir = args.metadata_dir
     summary_root = args.summary_dir
     pending_root = args.pending_dir
+    status_root = args.status_dir
     ef_root = args.bibframe_root
 
     if not pairtree_root.exists() or not pairtree_root.is_dir():
@@ -483,12 +491,16 @@ def main():
         summary_root.mkdir(parents=True, exist_ok=True)
     if pending_root is not None:
         pending_root.mkdir(parents=True, exist_ok=True)
+    if status_root is not None:
+        status_root.mkdir(parents=True, exist_ok=True)
     # Configuration Fingerprinting
     metadata_path = export_dir / "run_metadata.json"
     current_config = {
         "schema_version": "2.0",
-        "pipeline_version": "3.1.0",
+        "pipeline_version": "3.2.0",
         "export_policy": "unfiltered",
+        "output_format": "tsv.gz",
+        "gzip_level": args.gzip_level,
         "pending_schema_version": "1.0",
         "stanza_page_batch_size": STANZA_PAGE_BATCH_SIZE,
         "max_zip_size_mb": args.max_zip_size_mb,
@@ -499,6 +511,7 @@ def main():
         "metadata_dir": str(metadata_dir.resolve()),
         "summary_dir": str(summary_root.resolve()) if summary_root is not None else None,
         "pending_dir": str(pending_root.resolve()) if pending_root is not None else None,
+        "status_dir": str(status_root.resolve()) if status_root is not None else None,
     }
 
     if metadata_path.exists():
@@ -584,8 +597,15 @@ def main():
         run_id = f"local_{time.strftime('%Y%m%d_%H%M%S')}"
 
     stanza_res_dir = Path(os.environ.get("STANZA_RESOURCES_DIR", Path.home() / "stanza_resources"))
-    if task_id == 0:
-        prov_data = generate_run_provenance(run_id, stanza_res_dir)
+    provenance_run_id = os.environ.get("PROVENANCE_RUN_ID", run_id)
+    write_provenance = os.environ.get("WRITE_PROVENANCE", "1") == "1"
+    if task_id == 0 and write_provenance:
+        prov_data = generate_run_provenance(
+            provenance_run_id,
+            stanza_res_dir,
+            output_format="tsv.gz",
+            gzip_level=args.gzip_level,
+        )
         write_run_provenance_once(prov_data, metadata_dir)
 
     collect_metrics = summary_root is not None
@@ -594,7 +614,7 @@ def main():
             htid, language_hint, zip_size_bytes_hint,
             pairtree_root, ef_root, export_dir,
             args.max_zip_size_mb, args.flat_output, collect_metrics,
-            not args.skip_checkpoints,
+            not args.skip_checkpoints, args.gzip_level,
         )
         for htid, language_hint, zip_size_bytes_hint in task_records
     ]
@@ -785,6 +805,26 @@ def main():
                     )
 
     elapsed = format_elapsed(time.monotonic() - task_started_at)
+    elapsed_seconds = time.monotonic() - task_started_at
+
+    if status_root is not None:
+        status_path = status_root / run_id / f"task_{task_id:04d}.json"
+        atomic_write_json(
+            status_path,
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "total_tasks": total_tasks,
+                "input_records": len(task_records),
+                "attempted": attempted_count,
+                "successful": result_count,
+                "processed_new": processed_count,
+                "checkpointed": checkpoint_count,
+                "pending": pending_count,
+                "elapsed_seconds": round(elapsed_seconds, 3),
+            },
+        )
+
     print(
         f"Task {task_id} completed: {attempted_count} attempted, "
         f"{result_count} successful ({processed_count} new, "

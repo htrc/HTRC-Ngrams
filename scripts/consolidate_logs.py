@@ -13,11 +13,16 @@ def consolidate_logs(
     output_path: Path,
     job_id: str,
     delete_task_logs: bool,
+    expected_logs: int = None,
 ) -> Path:
     task_logs = sorted(task_log_dir.glob(f"task_{job_id}_*.log"))
     if not task_logs:
         raise RuntimeError(
             f"No task logs found for SLURM array {job_id} in {task_log_dir}"
+        )
+    if expected_logs is not None and len(task_logs) != expected_logs:
+        raise RuntimeError(
+            f"Expected {expected_logs} task logs for {job_id}, found {len(task_logs)}"
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +70,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--delete-task-logs", action="store_true")
+    parser.add_argument("--expected-logs", type=int)
     args = parser.parse_args()
 
     consolidate_logs(
@@ -72,6 +78,7 @@ def main() -> None:
         args.output,
         args.job_id,
         args.delete_task_logs,
+        args.expected_logs,
     )
 
 

@@ -12,11 +12,22 @@ from pathlib import Path
 PENDING_FIELDS = ["htid", "reason_code", "detail"]
 
 
-def consolidate_pending(pending_dir: Path, run_id: str, delete_shards: bool) -> Path:
+def consolidate_pending(
+    pending_dir: Path,
+    run_id: str,
+    delete_shards: bool,
+    output_path: Path = None,
+    expected_shards: int = None,
+) -> Path:
     run_dir = pending_dir / run_id
     shard_paths = sorted(run_dir.glob("task_*.tsv"))
     if not shard_paths:
         raise RuntimeError(f"No pending shards found in {run_dir}")
+    if expected_shards is not None and len(shard_paths) != expected_shards:
+        raise RuntimeError(
+            f"Expected {expected_shards} pending shards in {run_dir}, "
+            f"found {len(shard_paths)}"
+        )
 
     records = {}
     for shard_path in shard_paths:
@@ -37,8 +48,8 @@ def consolidate_pending(pending_dir: Path, run_id: str, delete_shards: bool) -> 
                     "detail": row.get("detail") or "",
                 }
 
-    pending_dir.mkdir(parents=True, exist_ok=True)
-    output_path = pending_dir / "pending_volumes.tsv"
+    output_path = output_path or pending_dir / "pending_volumes.tsv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_name(
         f"{output_path.name}.{os.getpid()}_{uuid.uuid4().hex[:8]}.tmp"
     )
@@ -75,8 +86,16 @@ def main() -> None:
     parser.add_argument("--pending-dir", required=True, type=Path)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--delete-shards", action="store_true")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-shards", type=int)
     args = parser.parse_args()
-    consolidate_pending(args.pending_dir, args.run_id, args.delete_shards)
+    consolidate_pending(
+        args.pending_dir,
+        args.run_id,
+        args.delete_shards,
+        args.output,
+        args.expected_shards,
+    )
 
 
 if __name__ == "__main__":

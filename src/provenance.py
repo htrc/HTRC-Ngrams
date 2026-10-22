@@ -99,6 +99,8 @@ def get_stanza_model_metadata(stanza_resources_dir: Path) -> dict:
 def generate_run_provenance(
     run_id: str,
     stanza_resources_dir: Path,
+    output_format: str = "tsv.gz",
+    gzip_level: int = 1,
 ) -> dict:
     git_commit, deployment_method = get_git_commit()
     return {
@@ -110,6 +112,8 @@ def generate_run_provenance(
         "stanza_version": get_package_version("stanza"),
         "langid_version": get_package_version("langid"),
         "export_policy": "unfiltered",
+        "output_format": output_format,
+        "gzip_level": gzip_level,
         "stanza_models": get_stanza_model_metadata(stanza_resources_dir),
     }
 

@@ -86,10 +86,10 @@ def htid_to_tsv_path(htid: str, output_root: Path) -> Path:
     """
     Mirror the Pairtree folder structure for output TSV files.
     Produces the identical nested path as htid_to_zip_path()
-    but rooted at output_root and with .tsv extension.
+    but rooted at output_root and with .tsv.gz extension.
     """
     zip_path = htid_to_zip_path(htid, output_root)
-    return zip_path.with_suffix('.tsv')
+    return zip_path.with_suffix('.tsv.gz')
 
 def get_zip_size_mb(zip_path: Path) -> float:
     """Return the compressed ZIP file size in megabytes."""
