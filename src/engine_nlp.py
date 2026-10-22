@@ -6,8 +6,12 @@ from .engine_io import MetadataAccessError, MetadataPermissionError
 
 _STANZA_PIPELINES = {}
 
-STANZA_PAGE_BATCH_SIZE = 100
+STANZA_PAGE_BATCH_SIZE = int(
+    os.environ.get("STANZA_PAGE_BATCH_SIZE", "100")
+)
 
+if STANZA_PAGE_BATCH_SIZE <= 0:
+    raise ValueError("STANZA_PAGE_BATCH_SIZE must be greater than zero")
 STANZA_LANG_MAP = {
     "eng": "en",
     "deu": "de",
