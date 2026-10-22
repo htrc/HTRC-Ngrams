@@ -6,7 +6,7 @@ from .engine_io import MetadataAccessError, MetadataPermissionError
 
 _STANZA_PIPELINES = {}
 
-STANZA_PAGE_BATCH_SIZE = 50
+STANZA_PAGE_BATCH_SIZE = 100
 
 STANZA_LANG_MAP = {
     "eng": "en",
