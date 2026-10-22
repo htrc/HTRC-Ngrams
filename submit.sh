@@ -5,36 +5,53 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 ID_LIST="${ID_LIST:-htids.txt}"
+SHARD_MANIFEST="${SHARD_MANIFEST:-}"
 RUN_ROOT="${RUN_ROOT:-outputs/current_run}"
 PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-$RUN_ROOT/logs}"
 TASK_LOG_DIR="${TASK_LOG_DIR:-$RUN_LOG_DIR/tasks}"
 
-if [ ! -f "$ID_LIST" ]; then
-    echo "❌ HTID list not found: $ID_LIST"
-    exit 1
-fi
-
-N=$(awk 'NF && $0 !~ /^[[:space:]]*#/ {count++} END {print count+0}' "$ID_LIST")
-
-if [ "$N" -eq 0 ]; then
-    echo "❌ $ID_LIST is empty!"
-    exit 1
-fi
-
-# Use 300 array tasks for the current throughput test. Override with the
-# MAX_TASKS environment variable for later runs.
-MAX_TASKS="${MAX_TASKS:-300}"
-if [ "$N" -lt "$MAX_TASKS" ]; then
+if [ -n "$SHARD_MANIFEST" ]; then
+    if [ ! -f "$SHARD_MANIFEST" ]; then
+        echo "❌ Shard manifest not found: $SHARD_MANIFEST"
+        exit 1
+    fi
+    N=$(awk 'NF {count++} END {print count+0}' "$SHARD_MANIFEST")
+    INPUT_MODE="sharded"
+    INPUT_DESCRIPTION="$N task-specific shard(s)"
     ARRAY_MAX=$((N-1))
 else
-    ARRAY_MAX=$((MAX_TASKS-1))
+    if [ ! -f "$ID_LIST" ]; then
+        echo "❌ HTID list not found: $ID_LIST"
+        exit 1
+    fi
+    N=$(awk 'NF && $0 !~ /^[[:space:]]*#/ {count++} END {print count+0}' "$ID_LIST")
+    INPUT_MODE="unsharded"
+    INPUT_DESCRIPTION="$N volume(s)"
+
+    MAX_TASKS="${MAX_TASKS:-300}"
+    if [ "$N" -lt "$MAX_TASKS" ]; then
+        ARRAY_MAX=$((N-1))
+    else
+        ARRAY_MAX=$((MAX_TASKS-1))
+    fi
 fi
 
-echo "📦 Submitting $N volume(s) across $((ARRAY_MAX+1)) task(s)..."
+if [ "$N" -eq 0 ]; then
+    echo "❌ Input is empty!"
+    exit 1
+fi
+
+FRESH_RUN="${FRESH_RUN:-0}"
+if [ "$FRESH_RUN" = "1" ] && [ -e "$RUN_ROOT" ]; then
+    echo "❌ Fresh-run output already exists: $RUN_ROOT"
+    exit 1
+fi
+
+echo "📦 Submitting $INPUT_DESCRIPTION across $((ARRAY_MAX+1)) task(s)..."
 mkdir -p "$TASK_LOG_DIR"
 ARRAY_SUBMISSION=$(sbatch --parsable \
-    --export=ALL,ID_LIST="$ID_LIST",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR" \
+    --export=ALL,ID_LIST="$ID_LIST",SHARD_MANIFEST="$SHARD_MANIFEST",INPUT_MODE="$INPUT_MODE",FRESH_RUN="$FRESH_RUN",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR" \
     --output="$TASK_LOG_DIR/task_%A_%a.log" \
     --array=0-$ARRAY_MAX \
     submit_bigred.slurm)

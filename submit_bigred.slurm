@@ -28,6 +28,10 @@ module load python
 VENV_PATH="${VENV_PATH:-/N/project/htrc/venvs/htrc-ngram-stanza}"
 source "$VENV_PATH/bin/activate"
 export STANZA_RESOURCES_DIR="${STANZA_RESOURCES_DIR:-/N/project/htrc/stanza_resources}"
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 
 # 2. Enter working directory
 cd "$SLURM_SUBMIT_DIR"
@@ -40,6 +44,22 @@ BIBFRAME_ROOT="${BIBFRAME_ROOT:-/N/project/htrc/extracted-features/data/bibframe
 # This text file must be in the same folder as this script, containing your IDs
 ID_LIST="${ID_LIST:-htids.txt}"
 RUN_ROOT="${RUN_ROOT:-outputs/current_run}"
+
+INPUT_ARGS=()
+if [ "${INPUT_MODE:-unsharded}" = "sharded" ]; then
+    : "${SHARD_MANIFEST:?SHARD_MANIFEST is required for sharded input}"
+    SHARD_NUMBER=$((SLURM_ARRAY_TASK_ID + 1))
+    ID_LIST=$(awk -v target="$SHARD_NUMBER" 'NF {count++} count == target {print; exit}' "$SHARD_MANIFEST")
+    if [ -z "$ID_LIST" ] || [ ! -f "$ID_LIST" ]; then
+        echo "Unable to resolve shard $SHARD_NUMBER from $SHARD_MANIFEST" >&2
+        exit 1
+    fi
+    INPUT_ARGS+=(--input-is-task-shard)
+fi
+
+if [ "${FRESH_RUN:-0}" = "1" ]; then
+    INPUT_ARGS+=(--skip-checkpoints)
+fi
 
 OUTPUT_DIR="${OUTPUT_DIR:-$RUN_ROOT/bigrams}"
 METADATA_DIR="${METADATA_DIR:-$RUN_ROOT/metadata}"
@@ -59,7 +79,8 @@ python3 -u run_pipeline.py \
     --output-dir "$OUTPUT_DIR" \
     --metadata-dir "$METADATA_DIR" \
     --pending-dir "$PENDING_DIR" \
-    --max-zip-size-mb "$MAX_ZIP_SIZE_MB"
+    --max-zip-size-mb "$MAX_ZIP_SIZE_MB" \
+    "${INPUT_ARGS[@]}"
 
 # Pairtree output is the default. Do not pass --flat-output for production.
 

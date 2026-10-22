@@ -13,6 +13,8 @@ __pycache__/
 
 # Output / results
 results/
+outputs/
+shards/
 *.csv
 *.xlsx
 
@@ -28,6 +30,7 @@ local_pairtree_usage.py
 
 # Input data
 htids.txt
+input/
 
 # Local testing and scratch files
 test_local.py

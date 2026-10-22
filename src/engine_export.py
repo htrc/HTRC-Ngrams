@@ -1,5 +1,6 @@
 import csv
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Iterable, Union
@@ -48,23 +49,45 @@ def atomic_write_tsv(filepath: Union[str, Path], headers: Iterable[str], rows: I
     pid = os.getpid()
     uid = uuid.uuid4().hex[:8]
     tmp_path = filepath.with_name(f"{filepath.name}.{pid}_{uid}.tmp")
+    total_started_at = time.perf_counter()
+    write_seconds = 0.0
+    fsync_seconds = 0.0
+    validation_seconds = 0.0
+    replace_seconds = 0.0
 
     try:
+        write_started_at = time.perf_counter()
         with open(tmp_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f, delimiter="\t", lineterminator="\n")
             writer.writerow(headers)
             writer.writerows(rows)
 
             f.flush()
-            os.fsync(f.fileno())
+            write_seconds = time.perf_counter() - write_started_at
 
+            fsync_started_at = time.perf_counter()
+            os.fsync(f.fileno())
+            fsync_seconds = time.perf_counter() - fsync_started_at
+
+        validation_started_at = time.perf_counter()
         if not is_complete_tsv(tmp_path, allowed_headers={headers}):
             raise RuntimeError(f"Generated temporary file {tmp_path} is missing final newline or empty.")
+        validation_seconds = time.perf_counter() - validation_started_at
 
+        replace_started_at = time.perf_counter()
         os.replace(tmp_path, filepath)
+        replace_seconds = time.perf_counter() - replace_started_at
     finally:
         if tmp_path.exists():
             try:
                 tmp_path.unlink()
             except OSError:
                 pass
+
+    return {
+        "export_seconds": time.perf_counter() - total_started_at,
+        "export_write_seconds": write_seconds,
+        "export_fsync_seconds": fsync_seconds,
+        "export_validation_seconds": validation_seconds,
+        "export_replace_seconds": replace_seconds,
+    }

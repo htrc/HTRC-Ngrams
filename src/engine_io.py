@@ -1,4 +1,5 @@
 import zipfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,10 @@ class ZipReadError(ZipAccessError):
     pass
 
 
+class ZipNotFoundError(ZipAccessError):
+    pass
+
+
 class MetadataAccessError(RuntimeError):
     def __init__(self, path: Path, detail: str):
         self.path = Path(path)
@@ -39,6 +44,7 @@ class VolumeReadStats:
     yielded_pages: int = 0
     failed_pages: int = 0
     decoding_warnings: int = 0
+    io_seconds: float = 0.0
     failed_page_examples: list[str] = field(default_factory=list)
     decoding_warning_examples: list[str] = field(default_factory=list)
 
@@ -89,6 +95,8 @@ def get_zip_size_mb(zip_path: Path) -> float:
     """Return the compressed ZIP file size in megabytes."""
     try:
         return zip_path.stat().st_size / (1024 * 1024)
+    except FileNotFoundError as error:
+        raise ZipNotFoundError(zip_path, str(error)) from error
     except PermissionError as error:
         raise ZipPermissionError(zip_path, str(error)) from error
     except OSError as error:
@@ -104,17 +112,21 @@ def stream_volume_from_zip(zip_path: Path, stats: VolumeReadStats = None):
     read_stats = stats if stats is not None else VolumeReadStats()
 
     try:
+        open_started_at = time.perf_counter()
         with zipfile.ZipFile(zip_path, 'r') as zf:
             txt_names = sorted(
                 name for name in zf.namelist() if name.endswith('.txt')
             )
+            read_stats.io_seconds += time.perf_counter() - open_started_at
             read_stats.total_page_files = len(txt_names)
 
             for name in txt_names:
+                page_started_at = time.perf_counter()
                 try:
                     data = zf.read(name)
                 except Exception as error:
                     read_stats.record_page_failure(name, error)
+                    read_stats.io_seconds += time.perf_counter() - page_started_at
                     continue
 
                 try:
@@ -123,12 +135,15 @@ def stream_volume_from_zip(zip_path: Path, stats: VolumeReadStats = None):
                     read_stats.record_decoding_warning(name)
                     page_text = data.decode('latin-1')
 
+                read_stats.io_seconds += time.perf_counter() - page_started_at
                 read_stats.yielded_pages += 1
                 yield page_text
     except CorruptZipError:
         raise
     except zipfile.BadZipFile as error:
         raise CorruptZipError(zip_path, str(error)) from error
+    except FileNotFoundError as error:
+        raise ZipNotFoundError(zip_path, str(error)) from error
     except PermissionError as error:
         raise ZipPermissionError(zip_path, str(error)) from error
     except OSError as error:

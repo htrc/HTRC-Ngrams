@@ -151,8 +151,8 @@ Current fields include:
 | `export_policy` | Export policy used for the run; currently `unfiltered`. |
 | `stanza_models` | Tokenizer and MWT package names and manifest MD5 values. |
 
-The manifest is created with exclusive file creation so concurrent array tasks
-do not write duplicate manifests.
+The first SLURM array task writes the shared manifest once for the run. Atomic
+file creation prevents a partial manifest from being published.
 
 ## Operational Diagnostics
 

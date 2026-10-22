@@ -188,11 +188,20 @@ Compute nodes should not be expected to download models during processing.
 ### HTID List
 
 Provide one HTID per line. Empty lines and lines beginning with `#` are ignored.
+The input may optionally provide a tab-separated language code in column two.
+When present, this volume-level language bypasses repeated Bibframe lookup and
+text-based detection.
 
 ```text
 uc1.32106009966604
 mdp.39015008170840
 # optional comment
+```
+
+```text
+htid	language
+uc1.32106009966604	eng
+mdp.39015008170840	eng
 ```
 
 ### Pairtree Root
@@ -237,10 +246,12 @@ python3 run_pipeline.py \
 | `--pending-dir` | No | Base directory for task-sharded pending-volume files. Defaults under `--output-dir`. |
 | `--max-zip-size-mb` | No | Skip source ZIPs larger than this many MiB. Default: `150`. |
 | `--flat-output` | No | Writes volume TSVs into one directory instead of a Pairtree-like hierarchy. |
+| `--input-is-task-shard` | No | Processes the complete input file because it was assigned specifically to the current SLURM task. |
+| `--skip-checkpoints` | No | Skips existing-output checks for a guaranteed-new output directory. Do not use for recovery runs. |
 
 The SLURM wrapper provides deployment defaults through environment variables.
 Set `VENV_PATH`, `STANZA_RESOURCES_DIR`, `PAIRTREE_ROOT`, `BIBFRAME_ROOT`,
-`ID_LIST`, `RUN_ROOT`, `OUTPUT_DIR`, `METADATA_DIR`, `PENDING_DIR`,
+`ID_LIST`, `SHARD_MANIFEST`, `FRESH_RUN`, `RUN_ROOT`, `OUTPUT_DIR`, `METADATA_DIR`, `PENDING_DIR`,
 `RUN_LOG_DIR`, `TASK_LOG_DIR`, or
 `MAX_ZIP_SIZE_MB` before
 submission to override a default without editing the script.
@@ -257,8 +268,43 @@ and removes the temporary files.
 bash submit.sh
 ```
 
-Each array task receives a stride-based subset of the HTID list. Within each
-task, `SLURM_CPUS_PER_TASK` determines the multiprocessing worker count.
+For small compatibility runs, each array task receives a stride-based subset of
+`ID_LIST`. Large runs should use task-specific, language-homogeneous shards.
+Create shards from a Hathifile whose first two columns are HTID and language:
+
+```bash
+python3 scripts/create_language_shards.py \
+  --input /path/to/hathifile.txt \
+  --output-dir /path/to/test5_shards \
+  --limit 5000 \
+  --target-volumes 100 \
+  --sample-seed 20261021 \
+  --pairtree-root /N/project/htrc/data/ht_text
+```
+
+`--sample-seed` produces a reproducible random sample instead of taking the
+first records in file order. Supported aliases are canonicalized before
+sharding. Unsupported languages are retained in compact shards so they appear
+in the final pending-volume report rather than disappearing silently.
+When `--pairtree-root` is supplied, the script balances each language's shards
+using compressed ZIP size as a workload estimate and records that size in the
+shard. Missing Pairtree volumes remain in the input and are reported by the
+pipeline as `ZIP_NOT_FOUND`.
+
+Submit the generated manifest with a new run root:
+
+```bash
+export SHARD_MANIFEST=/path/to/test5_shards/shards_manifest.txt
+export RUN_ROOT="outputs/test5_$(date +%Y%m%d_%H%M%S)"
+export FRESH_RUN=1
+bash submit.sh
+```
+
+Each manifest entry becomes one SLURM array task, and that task reads only its
+assigned shard. Within each task, `SLURM_CPUS_PER_TASK` determines the maximum
+multiprocessing worker count. Smaller shards automatically start fewer workers.
+The SLURM wrapper limits OpenMP and common numerical-library thread pools to one
+thread per worker to prevent CPU oversubscription.
 
 Monitor a submitted job with the scheduler tools provided by the cluster:
 
@@ -268,7 +314,8 @@ squeue -u "$USER"
 
 The pipeline uses checkpoint validation: if a target TSV already exists and
 possesses both a valid header and a final newline byte, that volume is treated
-as complete and skipped.
+as complete and skipped. `FRESH_RUN=1` disables these checks only after
+`submit.sh` verifies that the requested run root does not already exist.
 
 ## Recovery and Retry
 
@@ -332,7 +379,8 @@ missing or incomplete outputs are processed again.
 ├── finalize_run.slurm
 ├── scripts/
 │   ├── consolidate_logs.py
-│   └── consolidate_pending.py
+│   ├── consolidate_pending.py
+│   └── create_language_shards.py
 └── src/
     ├── config.py
     ├── engine_export.py

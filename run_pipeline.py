@@ -13,6 +13,7 @@ from src.engine_io import (
     MetadataAccessError,
     MetadataPermissionError,
     VolumeReadStats,
+    ZipNotFoundError,
     ZipPermissionError,
     ZipReadError,
     get_zip_size_mb,
@@ -26,7 +27,9 @@ from src.engine_nlp import (
     StanzaPipelineInitializationError,
     UnsupportedLanguageResolutionError,
     UnsupportedStanzaLanguageError,
+    canonicalize_language,
     get_profile,
+    is_supported_language,
     resolve_language,
     resolve_language_from_metadata,
     tokenize_page_batch,
@@ -91,6 +94,52 @@ def format_elapsed(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def load_input_records(path: Path):
+    """Load one-column HTID lists or two-column HTID/language shards."""
+    records = []
+    seen_records = {}
+
+    with open(path, "r", encoding="utf-8", newline="") as file:
+        for line_number, line in enumerate(file, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            fields = stripped.split("\t")
+            htid = fields[0].strip()
+            language = fields[1].strip().lower() if len(fields) > 1 else ""
+
+            if htid.lower() == "htid":
+                continue
+            if not htid:
+                continue
+
+            zip_size_bytes = None
+            if len(fields) > 2 and fields[2].strip():
+                try:
+                    zip_size_bytes = int(fields[2].strip())
+                except ValueError as error:
+                    raise RuntimeError(
+                        f"Invalid ZIP size for {htid} on line {line_number} "
+                        f"of {path}: {fields[2]!r}"
+                    ) from error
+
+            previous_record = seen_records.get(htid)
+            if previous_record is not None:
+                previous_language, _ = previous_record
+                if language and previous_language and language != previous_language:
+                    raise RuntimeError(
+                        f"Conflicting languages for {htid} in {path}: "
+                        f"'{previous_language}' and '{language}'."
+                    )
+                continue
+
+            seen_records[htid] = (language, zip_size_bytes)
+            records.append((htid, language or None, zip_size_bytes))
+
+    return records
+
+
 RESULT_FIELDS = [
     "volume_name",
     "zip_path",
@@ -119,7 +168,12 @@ PENDING_FIELDS = ["htid", "reason_code", "detail"]
 
 def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
                    max_zip_size_mb: float = 150.0, flat_output: bool = False,
-                   ef_root: Path = None, collect_metrics: bool = False):
+                   ef_root: Path = None, collect_metrics: bool = False,
+                   language_hint: str = None, check_existing: bool = True,
+                   zip_size_bytes_hint: int = None):
+
+    volume_started_at = time.perf_counter()
+    performance = Counter()
 
     if flat_output:
         safe_name = htid.replace('/', '=').replace(':', '+')
@@ -130,22 +184,48 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
     volume_name = tsv_path.stem
 
     # Checkpointing: skip if this volume was already processed in a previous run
-    if is_complete_tsv(tsv_path):
+    checkpoint_started_at = time.perf_counter()
+    if check_existing and is_complete_tsv(tsv_path):
+        performance["checkpoint_seconds"] += (
+            time.perf_counter() - checkpoint_started_at
+        )
+        performance["volume_seconds"] += time.perf_counter() - volume_started_at
         return {
             "volume_name": volume_name,
             "output_file": str(tsv_path),
             "record_status": "checkpointed_existing",
+            "_performance": dict(performance),
         }
+    performance["checkpoint_seconds"] += (
+        time.perf_counter() - checkpoint_started_at
+    )
+
+    manifest_language = None
+    if language_hint:
+        manifest_language = canonicalize_language(language_hint)
+        if not is_supported_language(manifest_language):
+            raise UnsupportedLanguageResolutionError(
+                language_hint, "input manifest"
+            )
 
     # Size guard: skip volumes whose ZIP exceeds the configured threshold.
-    zip_size_mb = get_zip_size_mb(zip_path)
+    zip_stat_started_at = time.perf_counter()
+    if zip_size_bytes_hint is None:
+        zip_size_mb = get_zip_size_mb(zip_path)
+    else:
+        zip_size_mb = zip_size_bytes_hint / (1024 * 1024)
+    performance["zip_stat_seconds"] += time.perf_counter() - zip_stat_started_at
     if zip_size_mb > max_zip_size_mb:
         raise PendingVolumeError(
             "ZIP_TOO_LARGE",
             f"Compressed ZIP is {zip_size_mb:.1f} MiB; limit is {max_zip_size_mb:.1f} MiB.",
         )
 
-    lang = resolve_language_from_metadata(htid, ef_root=ef_root)
+    language_started_at = time.perf_counter()
+    if manifest_language:
+        lang = manifest_language
+    else:
+        lang = resolve_language_from_metadata(htid, ef_root=ef_root)
     if lang is None:
         sample_read_stats = VolumeReadStats()
         sample_pages = list(
@@ -171,6 +251,7 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
                 f"{failure_example}",
             )
         lang = resolve_language(htid, sample_pages)
+    performance["language_seconds"] += time.perf_counter() - language_started_at
 
     profile = get_profile(lang)
 
@@ -192,15 +273,25 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
     for page in stream_volume_from_zip(zip_path, stats=read_stats):
         page_batch.append(page)
         if len(page_batch) == STANZA_PAGE_BATCH_SIZE:
+            stanza_started_at = time.perf_counter()
             count_tokenized_pages(
                 tokenize_page_batch(page_batch, profile, lang)
+            )
+            performance["stanza_seconds"] += (
+                time.perf_counter() - stanza_started_at
             )
             page_batch.clear()
 
     if page_batch:
+        stanza_started_at = time.perf_counter()
         count_tokenized_pages(
             tokenize_page_batch(page_batch, profile, lang)
         )
+        performance["stanza_seconds"] += (
+            time.perf_counter() - stanza_started_at
+        )
+
+    performance["zip_io_seconds"] += read_stats.io_seconds
 
     if total_tokens == 0:
         if read_stats.total_page_files == 0:
@@ -229,12 +320,14 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
     headers = ["w1", "w2", "freq"]
     rows = ([w1, w2, count] for (w1, w2), count in bigram_counts.items())
 
-    atomic_write_tsv(tsv_path, headers, rows)
+    performance.update(atomic_write_tsv(tsv_path, headers, rows))
+    performance["volume_seconds"] += time.perf_counter() - volume_started_at
     result = {
         'volume_name':          volume_name,
         'zip_path':             str(zip_path),
         'language':             lang,
         'output_file':          str(tsv_path),
+        '_performance':         dict(performance),
     }
 
     if not collect_metrics:
@@ -272,8 +365,12 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
 
 def process_one(args_tuple):
     """Module-level wrapper to avoid multiprocessing PicklingError on local functions."""
-    htid, pairtree_root, ef_root, export_dir, max_zip_size_mb, flat_output, collect_metrics = args_tuple
+    (
+        htid, language_hint, zip_size_bytes_hint, pairtree_root, ef_root, export_dir,
+        max_zip_size_mb, flat_output, collect_metrics, check_existing,
+    ) = args_tuple
     zip_path = htid_to_zip_path(htid, pairtree_root)
+    worker_started_at = time.perf_counter()
 
     def pending(reason_code, detail=""):
         return {
@@ -281,23 +378,28 @@ def process_one(args_tuple):
             'htid': htid,
             'reason_code': reason_code,
             'detail': detail,
+            '_performance': {
+                'volume_seconds': time.perf_counter() - worker_started_at,
+            },
         }
-
-    if not zip_path.exists():
-        return pending("ZIP_NOT_FOUND", str(zip_path))
 
     try:
         result = analyze_volume(htid, zip_path, export_dir,
                                 max_zip_size_mb=max_zip_size_mb,
                                 flat_output=flat_output,
                                 ef_root=ef_root,
-                                collect_metrics=collect_metrics)
+                                collect_metrics=collect_metrics,
+                                language_hint=language_hint,
+                                check_existing=check_existing,
+                                zip_size_bytes_hint=zip_size_bytes_hint)
         result['htid'] = htid
         return {'type': 'success', 'data': result}
     except PendingVolumeError as error:
         return pending(error.reason_code, error.detail)
     except CorruptZipError as error:
         return pending("ZIP_CORRUPT", error.detail)
+    except ZipNotFoundError as error:
+        return pending("ZIP_NOT_FOUND", str(error.zip_path))
     except ZipPermissionError as error:
         return pending("ZIP_PERMISSION_DENIED", error.detail)
     except ZipReadError as error:
@@ -349,6 +451,8 @@ def main():
     parser.add_argument("--metadata-dir", type=Path, required=True, help="Directory to save global run provenance metadata")
     parser.add_argument("--summary-dir", type=Path, help="Optional directory for task-sharded summary CSV files. If omitted, summary CSV files are not written.")
     parser.add_argument("--pending-dir", type=Path, help="Directory for task-sharded pending-volume files (default: <output-dir>/task_logs/<run-id>/pending)")
+    parser.add_argument("--input-is-task-shard", action="store_true", help="Process the entire input file because it was assigned specifically to this SLURM task")
+    parser.add_argument("--skip-checkpoints", action="store_true", help="Skip existing-output checks for a guaranteed-new output directory")
     args = parser.parse_args()
 
     if args.max_zip_size_mb <= 0:
@@ -383,7 +487,7 @@ def main():
     metadata_path = export_dir / "run_metadata.json"
     current_config = {
         "schema_version": "2.0",
-        "pipeline_version": "3.0.0",
+        "pipeline_version": "3.1.0",
         "export_policy": "unfiltered",
         "pending_schema_version": "1.0",
         "stanza_page_batch_size": STANZA_PAGE_BATCH_SIZE,
@@ -428,16 +532,33 @@ def main():
                 except OSError:
                     pass
 
-    with open(htids_file, 'r', encoding='utf-8') as f:
-        htids = []
-        for line in f:
-            stripped = line.strip()
-            if stripped and not stripped.startswith('#'):
-                htids.append(stripped)
-        htids = list(dict.fromkeys(htids))
+    input_records = load_input_records(htids_file)
 
-    if len(htids) == 0:
+    if len(input_records) == 0:
         parser.error("The HTID list contains no processable volume IDs")
+
+    if args.input_is_task_shard:
+        shard_languages = {
+            canonicalize_language(language)
+            for _, language, _ in input_records
+            if language
+        }
+        supported_shard_languages = {
+            language
+            for language in shard_languages
+            if is_supported_language(language)
+        }
+        if (
+            len(supported_shard_languages) > 1
+            or (
+                supported_shard_languages
+                and supported_shard_languages != shard_languages
+            )
+        ):
+            parser.error(
+                "Supported-language task shards must be language-homogeneous; found: "
+                + ", ".join(sorted(shard_languages))
+            )
 
     # Read SLURM array environment variables
     # SLURM_ARRAY_TASK_ID = which task number this is (0, 1, 2...)
@@ -446,8 +567,11 @@ def main():
     total_tasks = int(os.environ.get('SLURM_ARRAY_TASK_COUNT', 1))
     n_workers  = int(os.environ.get('SLURM_CPUS_PER_TASK',    1))
 
-    # Stride slicing: each task picks every Nth volume from the master list
-    my_htids = htids[task_id::total_tasks]
+    if args.input_is_task_shard:
+        task_records = input_records
+    else:
+        # Compatibility mode for existing unsharded HTID lists.
+        task_records = input_records[task_id::total_tasks]
 
     # Generate Run Provenance Manifest BEFORE worker execution so failed runs are captured
     slurm_array_id = os.environ.get("SLURM_ARRAY_JOB_ID")
@@ -460,16 +584,19 @@ def main():
         run_id = f"local_{time.strftime('%Y%m%d_%H%M%S')}"
 
     stanza_res_dir = Path(os.environ.get("STANZA_RESOURCES_DIR", Path.home() / "stanza_resources"))
-    prov_data = generate_run_provenance(run_id, stanza_res_dir)
-    write_run_provenance_once(prov_data, metadata_dir)
+    if task_id == 0:
+        prov_data = generate_run_provenance(run_id, stanza_res_dir)
+        write_run_provenance_once(prov_data, metadata_dir)
 
     collect_metrics = summary_root is not None
     task_args = [
         (
-            htid, pairtree_root, ef_root, export_dir,
+            htid, language_hint, zip_size_bytes_hint,
+            pairtree_root, ef_root, export_dir,
             args.max_zip_size_mb, args.flat_output, collect_metrics,
+            not args.skip_checkpoints,
         )
-        for htid in my_htids
+        for htid, language_hint, zip_size_bytes_hint in task_records
     ]
 
     # Task-level pending records and optional summary output
@@ -550,12 +677,13 @@ def main():
     checkpoint_count = 0
     pending_count = 0
     attempted_count = 0
+    performance_totals = Counter()
     progress_interval = 1000
     task_started_at = time.monotonic()
 
     print(
-        f"Task {task_id}/{total_tasks} started: {len(my_htids)} HTIDs, "
-        f"{n_workers} workers."
+        f"Task {task_id}/{total_tasks} started: {len(task_records)} HTIDs, "
+        f"{min(n_workers, len(task_records))} workers."
     )
 
     with ExitStack() as stack:
@@ -587,14 +715,18 @@ def main():
             pending_writer.writeheader()
 
         # Process this task's volumes using all available CPUs
-        with Pool(processes=n_workers) as pool:
+        worker_count = min(n_workers, len(task_records))
+        with Pool(processes=worker_count) as pool:
             for r in pool.imap_unordered(process_one, task_args):
                 attempted_count += 1
                 if r is None:
                     raise RuntimeError("A worker returned no result.")
 
+                performance_totals.update(r.get("_performance", {}))
+
                 if r['type'] == 'success':
                     data = r['data']
+                    performance_totals.update(data.pop("_performance", {}))
                     data['run_id'] = run_id
                     data.setdefault("record_status", "processed")
 
@@ -648,7 +780,7 @@ def main():
                     elapsed = format_elapsed(time.monotonic() - task_started_at)
                     print(
                         f"Task {task_id} progress: {attempted_count}/"
-                        f"{len(my_htids)} attempted, {result_count} successful, "
+                        f"{len(task_records)} attempted, {result_count} successful, "
                         f"{pending_count} pending, elapsed {elapsed}."
                     )
 
@@ -658,6 +790,17 @@ def main():
         f"{result_count} successful ({processed_count} new, "
         f"{checkpoint_count} checkpointed), {pending_count} pending, "
         f"elapsed {elapsed}."
+    )
+    print(
+        "Task performance totals (worker-seconds): "
+        f"volume={performance_totals['volume_seconds']:.3f}, "
+        f"checkpoint={performance_totals['checkpoint_seconds']:.3f}, "
+        f"zip_stat={performance_totals['zip_stat_seconds']:.3f}, "
+        f"language={performance_totals['language_seconds']:.3f}, "
+        f"zip_io={performance_totals['zip_io_seconds']:.3f}, "
+        f"stanza={performance_totals['stanza_seconds']:.3f}, "
+        f"export={performance_totals['export_seconds']:.3f}, "
+        f"fsync={performance_totals['export_fsync_seconds']:.3f}."
     )
 
 if __name__ == "__main__":
