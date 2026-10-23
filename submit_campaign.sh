@@ -9,6 +9,8 @@ cd "$SCRIPT_DIR"
 RUN_ROOT="${RUN_ROOT:-outputs/current_campaign}"
 WAVE_SIZE="${WAVE_SIZE:-900}"
 MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-200}"
+TASK_CPUS="${TASK_CPUS:-8}"
+TASK_MEMORY="${TASK_MEMORY:-32GB}"
 CAMPAIGN_FRESH_RUN="${FRESH_RUN:-1}"
 CAMPAIGN_NAME="${CAMPAIGN_NAME:-initial}"
 PROVENANCE_RUN_ID="${PROVENANCE_RUN_ID:-campaign_${CAMPAIGN_NAME}}"
@@ -30,6 +32,14 @@ if [ "$MAX_CONCURRENT_TASKS" -le 0 ]; then
     echo "MAX_CONCURRENT_TASKS must be greater than zero" >&2
     exit 1
 fi
+if ! [[ "$TASK_CPUS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "TASK_CPUS must be a positive integer" >&2
+    exit 1
+fi
+if [ -z "$TASK_MEMORY" ]; then
+    echo "TASK_MEMORY must not be empty" >&2
+    exit 1
+fi
 
 CAMPAIGN_CONTROL_DIR="$RUN_ROOT/control/$CAMPAIGN_NAME"
 CAMPAIGN_PENDING_DIR="$RUN_ROOT/pending/campaigns/$CAMPAIGN_NAME"
@@ -49,6 +59,7 @@ printf "wave_index\tarray_job_id\tfinalizer_job_id\n" \
     > "$CAMPAIGN_CONTROL_DIR/submissions.tsv"
 
 export RUN_ROOT WAVE_DIR CAMPAIGN_MANIFEST MAX_CONCURRENT_TASKS
+export TASK_CPUS TASK_MEMORY
 export CAMPAIGN_FRESH_RUN CAMPAIGN_NAME CAMPAIGN_CONTROL_DIR
 export CAMPAIGN_PENDING_DIR CAMPAIGN_STATUS_DIR
 export PROVENANCE_RUN_ID

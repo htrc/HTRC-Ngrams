@@ -11,6 +11,17 @@ PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-$RUN_ROOT/logs}"
 TASK_LOG_DIR="${TASK_LOG_DIR:-$RUN_LOG_DIR/tasks}"
 STATUS_DIR="${STATUS_DIR:-$RUN_ROOT/status}"
+TASK_CPUS="${TASK_CPUS:-8}"
+TASK_MEMORY="${TASK_MEMORY:-32GB}"
+
+if ! [[ "$TASK_CPUS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "❌ TASK_CPUS must be a positive integer"
+    exit 1
+fi
+if [ -z "$TASK_MEMORY" ]; then
+    echo "❌ TASK_MEMORY must not be empty"
+    exit 1
+fi
 
 if [ -n "$SHARD_MANIFEST" ]; then
     if [ ! -f "$SHARD_MANIFEST" ]; then
@@ -50,8 +61,13 @@ if [ "$FRESH_RUN" = "1" ] && [ -e "$RUN_ROOT" ]; then
 fi
 
 echo "📦 Submitting $INPUT_DESCRIPTION across $((ARRAY_MAX+1)) task(s)..."
+echo "🖥️  Task resources: $TASK_CPUS CPUs, $TASK_MEMORY memory"
 mkdir -p "$TASK_LOG_DIR"
 ARRAY_SUBMISSION=$(sbatch --parsable \
+    --nodes=1 \
+    --ntasks=1 \
+    --cpus-per-task="$TASK_CPUS" \
+    --mem="$TASK_MEMORY" \
     --export=ALL,ID_LIST="$ID_LIST",SHARD_MANIFEST="$SHARD_MANIFEST",INPUT_MODE="$INPUT_MODE",FRESH_RUN="$FRESH_RUN",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR",STATUS_DIR="$STATUS_DIR" \
     --output="$TASK_LOG_DIR/task_%A_%a.log" \
     --array=0-$ARRAY_MAX \

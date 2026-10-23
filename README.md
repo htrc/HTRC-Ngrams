@@ -320,6 +320,45 @@ export FRESH_RUN=1
 bash submit_campaign.sh
 ```
 
+The submission resource profile is configurable without editing the SLURM
+scripts. The validated default remains eight CPUs and 32 GB per array task:
+
+```bash
+export TASK_CPUS=8
+export TASK_MEMORY=32GB
+```
+
+For a controlled full-node benchmark on BigRed200, create new shards from the
+same deterministic 30,000-volume sample used by the baseline test. A target of
+1,500 volumes preserves approximately the same volumes-per-worker ratio as the
+100-volume, eight-worker baseline. Twelve concurrent 128-core tasks request
+1,536 CPU cores in total, which closely matches the baseline ceiling of 1,600:
+
+```bash
+python3 scripts/create_language_shards.py \
+  --input input/hathi_upd_20261021.txt \
+  --output-dir shards/full_node_test_30000 \
+  --limit 30000 \
+  --target-volumes 1500 \
+  --sample-seed 20261021 \
+  --pairtree-root /N/project/htrc/data/ht_text
+
+export SHARD_MANIFEST="$(pwd)/shards/full_node_test_30000/shards_manifest.txt"
+export RUN_ROOT="$(pwd)/outputs/full_node_test_30000"
+export CAMPAIGN_NAME=initial
+export WAVE_SIZE=900
+export MAX_CONCURRENT_TASKS=12
+export TASK_CPUS=128
+export TASK_MEMORY=256GB
+export FRESH_RUN=1
+bash submit_campaign.sh
+```
+
+This benchmark changes only task sizing and node allocation. Tokenization,
+page batching, output compression, checkpointing, and pending-volume handling
+remain unchanged. Compare wall time, task-hours, maximum RSS, terminal counts,
+and representative bigram outputs before changing the production profile.
+
 For a 30,000-volume rehearsal, a smaller wave size such as `200` exercises
 multiple wave transitions while retaining the production control flow.
 

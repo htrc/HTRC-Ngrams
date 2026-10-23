@@ -114,6 +114,18 @@ def generate_run_provenance(
         "export_policy": "unfiltered",
         "output_format": output_format,
         "gzip_level": gzip_level,
+        "execution_resources": {
+            "slurm_cpus_per_task": int(
+                os.environ.get("SLURM_CPUS_PER_TASK", "1")
+            ),
+            "slurm_mem_per_node_mb": (
+                int(os.environ["SLURM_MEM_PER_NODE"])
+                if os.environ.get("SLURM_MEM_PER_NODE", "").isdigit()
+                else None
+            ),
+            "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+            "mkl_num_threads": os.environ.get("MKL_NUM_THREADS"),
+        },
         "stanza_models": get_stanza_model_metadata(stanza_resources_dir),
     }
 
