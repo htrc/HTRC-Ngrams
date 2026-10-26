@@ -16,7 +16,6 @@ from src.engine_io import (
     ZipNotFoundError,
     ZipPermissionError,
     ZipReadError,
-    get_zip_size_mb,
     htid_to_tsv_path,
     htid_to_zip_path,
     stream_volume_from_zip,
@@ -167,10 +166,10 @@ PENDING_FIELDS = ["htid", "reason_code", "detail"]
 # ---------------------------------------------------------------------------
 
 def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
-                   max_zip_size_mb: float = 150.0, flat_output: bool = False,
+                   flat_output: bool = False,
                    ef_root: Path = None, collect_metrics: bool = False,
                    language_hint: str = None, check_existing: bool = True,
-                   zip_size_bytes_hint: int = None, gzip_level: int = 1):
+                   gzip_level: int = 1):
 
     volume_started_at = time.perf_counter()
     performance = Counter()
@@ -207,19 +206,6 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
             raise UnsupportedLanguageResolutionError(
                 language_hint, "input manifest"
             )
-
-    # Size guard: skip volumes whose ZIP exceeds the configured threshold.
-    zip_stat_started_at = time.perf_counter()
-    if zip_size_bytes_hint is None:
-        zip_size_mb = get_zip_size_mb(zip_path)
-    else:
-        zip_size_mb = zip_size_bytes_hint / (1024 * 1024)
-    performance["zip_stat_seconds"] += time.perf_counter() - zip_stat_started_at
-    if zip_size_mb > max_zip_size_mb:
-        raise PendingVolumeError(
-            "ZIP_TOO_LARGE",
-            f"Compressed ZIP is {zip_size_mb:.1f} MiB; limit is {max_zip_size_mb:.1f} MiB.",
-        )
 
     language_started_at = time.perf_counter()
     if manifest_language:
@@ -368,8 +354,8 @@ def analyze_volume(htid: str, zip_path: Path, output_dir: Path,
 def process_one(args_tuple):
     """Module-level wrapper to avoid multiprocessing PicklingError on local functions."""
     (
-        htid, language_hint, zip_size_bytes_hint, pairtree_root, ef_root, export_dir,
-        max_zip_size_mb, flat_output, collect_metrics, check_existing, gzip_level,
+        htid, language_hint, pairtree_root, ef_root, export_dir,
+        flat_output, collect_metrics, check_existing, gzip_level,
     ) = args_tuple
     zip_path = htid_to_zip_path(htid, pairtree_root)
     worker_started_at = time.perf_counter()
@@ -387,13 +373,11 @@ def process_one(args_tuple):
 
     try:
         result = analyze_volume(htid, zip_path, export_dir,
-                                max_zip_size_mb=max_zip_size_mb,
                                 flat_output=flat_output,
                                 ef_root=ef_root,
                                 collect_metrics=collect_metrics,
                                 language_hint=language_hint,
                                 check_existing=check_existing,
-                                zip_size_bytes_hint=zip_size_bytes_hint,
                                 gzip_level=gzip_level)
         result['htid'] = htid
         return {'type': 'success', 'data': result}
@@ -448,7 +432,6 @@ def main():
     parser.add_argument("--pairtree", required=True, type=Path, help="Absolute path to the HathiTrust Pairtree root (e.g., /N/project/htrc/data/ht_text)")
     parser.add_argument("--id-list", required=True, type=Path, help="Absolute path to a text file containing HathiTrust Volume IDs (one per line)")
     parser.add_argument("--bibframe-root", type=Path, help="Optional root directory containing HTRC Bibframe JSON-LD metadata")
-    parser.add_argument("--max-zip-size-mb", type=float, default=150.0, help="Skip source ZIP files larger than this many MiB (default: 150)")
     parser.add_argument("--flat-output", action="store_true", help="Save TSV files in one flat directory (not recommended for more than 1 million volumes)")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory to save volume TSVs and run_metadata.json")
     parser.add_argument("--metadata-dir", type=Path, required=True, help="Directory to save global run provenance metadata")
@@ -460,8 +443,6 @@ def main():
     parser.add_argument("--status-dir", type=Path, help="Directory for task completion records used by campaign validation")
     args = parser.parse_args()
 
-    if args.max_zip_size_mb <= 0:
-        parser.error("--max-zip-size-mb must be greater than zero")
     if not 0 <= args.gzip_level <= 9:
         parser.error("--gzip-level must be between 0 and 9")
 
@@ -497,13 +478,12 @@ def main():
     metadata_path = export_dir / "run_metadata.json"
     current_config = {
         "schema_version": "2.0",
-        "pipeline_version": "3.2.0",
+        "pipeline_version": "3.3.0",
         "export_policy": "unfiltered",
         "output_format": "tsv.gz",
         "gzip_level": args.gzip_level,
         "pending_schema_version": "1.0",
         "stanza_page_batch_size": STANZA_PAGE_BATCH_SIZE,
-        "max_zip_size_mb": args.max_zip_size_mb,
         "flat_output": args.flat_output,
         "pairtree_root": str(pairtree_root.resolve()),
         "bibframe_root": str(ef_root.resolve()) if ef_root is not None else None,
@@ -611,12 +591,11 @@ def main():
     collect_metrics = summary_root is not None
     task_args = [
         (
-            htid, language_hint, zip_size_bytes_hint,
-            pairtree_root, ef_root, export_dir,
-            args.max_zip_size_mb, args.flat_output, collect_metrics,
+            htid, language_hint, pairtree_root, ef_root, export_dir,
+            args.flat_output, collect_metrics,
             not args.skip_checkpoints, args.gzip_level,
         )
-        for htid, language_hint, zip_size_bytes_hint in task_records
+        for htid, language_hint, _zip_size_bytes_hint in task_records
     ]
 
     # Task-level pending records and optional summary output
@@ -835,7 +814,6 @@ def main():
         "Task performance totals (worker-seconds): "
         f"volume={performance_totals['volume_seconds']:.3f}, "
         f"checkpoint={performance_totals['checkpoint_seconds']:.3f}, "
-        f"zip_stat={performance_totals['zip_stat_seconds']:.3f}, "
         f"language={performance_totals['language_seconds']:.3f}, "
         f"zip_io={performance_totals['zip_io_seconds']:.3f}, "
         f"stanza={performance_totals['stanza_seconds']:.3f}, "

@@ -226,7 +226,6 @@ that retry. Concurrent runs should use different pending directories.
 | `ZIP_CORRUPT` | Python could not open the input as a valid ZIP archive. |
 | `ZIP_PERMISSION_DENIED` | The process could not access the source ZIP. |
 | `ZIP_READ_ERROR` | Another operating-system ZIP read error occurred. |
-| `ZIP_TOO_LARGE` | The compressed ZIP exceeds the configured size limit. |
 | `NO_TEXT_PAGES` | The ZIP contains no `.txt` page members. |
 | `NO_READABLE_PAGES` | Text page members exist, but all failed during reading. |
 | `NO_TOKENS_FOUND` | Pages were read, but tokenization produced no tokens. |

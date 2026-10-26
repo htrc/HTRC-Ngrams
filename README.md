@@ -231,8 +231,7 @@ python3 run_pipeline.py \
   --metadata-dir /path/to/metadata \
   --pending-dir /path/to/pending \
   --status-dir /path/to/status \
-  --gzip-level 1 \
-  --max-zip-size-mb 150
+  --gzip-level 1
 ```
 
 ### Arguments
@@ -248,7 +247,6 @@ python3 run_pipeline.py \
 | `--pending-dir` | No | Base directory for task-sharded pending-volume files. Defaults under `--output-dir`. |
 | `--status-dir` | No | Directory for compact task-completion records used for campaign reconciliation. |
 | `--gzip-level` | No | Gzip compression level from `0` through `9`. Default: `1`. |
-| `--max-zip-size-mb` | No | Skip source ZIPs larger than this many MiB. Default: `150`. |
 | `--flat-output` | No | Writes volume TSVs into one directory instead of a Pairtree-like hierarchy. |
 | `--input-is-task-shard` | No | Processes the complete input file because it was assigned specifically to the current SLURM task. |
 | `--skip-checkpoints` | No | Skips existing-output checks for a guaranteed-new output directory. Do not use for recovery runs. |
@@ -256,8 +254,7 @@ python3 run_pipeline.py \
 The SLURM wrapper provides deployment defaults through environment variables.
 Set `VENV_PATH`, `STANZA_RESOURCES_DIR`, `PAIRTREE_ROOT`, `BIBFRAME_ROOT`,
 `ID_LIST`, `SHARD_MANIFEST`, `FRESH_RUN`, `RUN_ROOT`, `OUTPUT_DIR`, `METADATA_DIR`, `PENDING_DIR`,
-`RUN_LOG_DIR`, `TASK_LOG_DIR`, `STATUS_DIR`, `GZIP_LEVEL`, or
-`MAX_ZIP_SIZE_MB` before
+`RUN_LOG_DIR`, `TASK_LOG_DIR`, `STATUS_DIR`, or `GZIP_LEVEL` before
 submission to override a default without editing the script.
 
 ## SLURM Execution
@@ -276,6 +273,11 @@ For small compatibility runs, each array task receives a stride-based subset of
 `ID_LIST`. Large runs should use task-specific, language-homogeneous shards.
 Create shards from a Hathifile whose first two columns are HTID and language:
 
+The production sharder intentionally consumes a separate, preprocessed
+two-column TSV (`htid`, `language`). Raw Hathifiles must be reduced to those
+columns before this step; the sharder does not infer column positions from the
+full Hathifile schema.
+
 ```bash
 python3 scripts/create_language_shards.py \
   --input /path/to/hathifile.txt \
@@ -283,17 +285,22 @@ python3 scripts/create_language_shards.py \
   --limit 5000 \
   --target-volumes 100 \
   --sample-seed 20261021 \
-  --pairtree-root /N/project/htrc/data/ht_text
+  --pairtree-root /N/project/htrc/data/ht_text \
+  --isolate-zip-size-mb 150
 ```
 
 `--sample-seed` produces a reproducible random sample instead of taking the
 first records in file order. Supported aliases are canonicalized before
 sharding. Unsupported languages are retained in compact shards so they appear
 in the final pending-volume report rather than disappearing silently.
-When `--pairtree-root` is supplied, the script balances each language's shards
-using compressed ZIP size as a workload estimate and records that size in the
-shard. Missing Pairtree volumes remain in the input and are reported by the
-pipeline as `ZIP_NOT_FOUND`.
+When `--pairtree-root` is supplied, the script uses a bounded min-heap to
+balance each language's shards by compressed ZIP size and records that size in
+the shard. Volumes larger than `--isolate-zip-size-mb` are not rejected; they
+are placed in one-volume shards so an outlier cannot delay every other volume
+in its task. Use `0` to disable this isolation. Missing Pairtree volumes remain
+in the input and are reported by the pipeline as `ZIP_NOT_FOUND`. The sharder
+also writes `shard_counts.tsv`, allowing campaign preparation to use recorded
+counts instead of reopening every shard.
 
 For a small single-array run, submit the generated manifest with a new run root:
 
@@ -328,36 +335,24 @@ export TASK_CPUS=8
 export TASK_MEMORY=32GB
 ```
 
-For a controlled full-node benchmark on BigRed200, create new shards from the
-same deterministic 30,000-volume sample used by the baseline test. A target of
-1,500 volumes preserves approximately the same volumes-per-worker ratio as the
-100-volume, eight-worker baseline. Twelve concurrent 128-core tasks request
-1,536 CPU cores in total, which closely matches the baseline ceiling of 1,600:
+`MAX_CONCURRENT_TASKS` sets the initial array throttle. The campaign stores the
+current value in `control/<campaign>/max_concurrent_tasks`, and every later wave
+reads that file before submission. To raise or lower concurrency for future
+waves without restarting the campaign, replace the file atomically:
 
 ```bash
-python3 scripts/create_language_shards.py \
-  --input input/hathi_upd_20261021.txt \
-  --output-dir shards/full_node_test_30000 \
-  --limit 30000 \
-  --target-volumes 1500 \
-  --sample-seed 20261021 \
-  --pairtree-root /N/project/htrc/data/ht_text
-
-export SHARD_MANIFEST="$(pwd)/shards/full_node_test_30000/shards_manifest.txt"
-export RUN_ROOT="$(pwd)/outputs/full_node_test_30000"
-export CAMPAIGN_NAME=initial
-export WAVE_SIZE=900
-export MAX_CONCURRENT_TASKS=12
-export TASK_CPUS=128
-export TASK_MEMORY=256GB
-export FRESH_RUN=1
-bash submit_campaign.sh
+CONTROL_FILE="$RUN_ROOT/control/$CAMPAIGN_NAME/max_concurrent_tasks"
+printf '500\n' > "${CONTROL_FILE}.tmp"
+mv "${CONTROL_FILE}.tmp" "$CONTROL_FILE"
 ```
 
-This benchmark changes only task sizing and node allocation. Tokenization,
-page batching, output compression, checkpointing, and pending-volume handling
-remain unchanged. Compare wall time, task-hours, maximum RSS, terminal counts,
-and representative bigram outputs before changing the production profile.
+Changing this file does not alter an array that is already running. If the
+active array should also change, update its throttle separately with the SLURM
+command approved by the cluster team, for example:
+
+```bash
+scontrol update JobId=<active-array-job-id> ArrayTaskThrottle=500
+```
 
 For a 30,000-volume rehearsal, a smaller wave size such as `200` exercises
 multiple wave transitions while retaining the production control flow.

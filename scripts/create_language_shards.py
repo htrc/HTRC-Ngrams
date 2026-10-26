@@ -3,6 +3,7 @@
 
 import argparse
 import csv
+import heapq
 import math
 import random
 import shutil
@@ -14,6 +15,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.engine_nlp import canonicalize_language, is_supported_language
 from src.engine_io import htid_to_zip_path
+
+
+def balance_records_by_size(records, target_volumes: int):
+    """Balance records with a bounded min-heap in O(N log S) time."""
+    if not records:
+        return []
+
+    shard_count = math.ceil(len(records) / target_volumes)
+    shard_records = [[] for _ in range(shard_count)]
+    available_shards = [
+        (0, 0, shard_index)
+        for shard_index in range(shard_count)
+    ]
+    heapq.heapify(available_shards)
+
+    for record in sorted(
+        records,
+        key=lambda item: (-(item[2] or 0), item[0]),
+    ):
+        total_size, record_count, shard_index = heapq.heappop(
+            available_shards
+        )
+        shard_records[shard_index].append(record)
+        total_size += record[2] or 0
+        record_count += 1
+        if record_count < target_volumes:
+            heapq.heappush(
+                available_shards,
+                (total_size, record_count, shard_index),
+            )
+
+    return shard_records
 
 
 def load_records(input_path: Path, limit: int, sample_seed: int = None):
@@ -84,6 +117,7 @@ def create_shards(
     target_volumes: int,
     sample_seed: int,
     pairtree_root: Path,
+    isolate_zip_size_mb: float,
     overwrite: bool,
 ) -> Path:
     if output_dir.exists():
@@ -127,36 +161,45 @@ def create_shards(
         )
 
     manifest_path = output_dir / "shards_manifest.txt"
+    shard_counts_path = output_dir / "shard_counts.tsv"
     manifest_rows = []
+    isolated_zip_count = 0
+    isolation_threshold_bytes = (
+        int(isolate_zip_size_mb * 1024 * 1024)
+        if isolate_zip_size_mb > 0
+        else None
+    )
 
     for language in sorted(records_by_language):
         language_records = records_by_language[language]
-        shard_count = math.ceil(len(language_records) / target_volumes)
+        if isolation_threshold_bytes is not None:
+            regular_records = [
+                record
+                for record in language_records
+                if record[2] is None or record[2] <= isolation_threshold_bytes
+            ]
+            isolated_records = [
+                record
+                for record in language_records
+                if record[2] is not None and record[2] > isolation_threshold_bytes
+            ]
+        else:
+            regular_records = language_records
+            isolated_records = []
 
         if pairtree_root is not None:
-            shard_records = [[] for _ in range(shard_count)]
-            shard_sizes = [0 for _ in range(shard_count)]
-            sorted_records = sorted(
-                language_records,
-                key=lambda record: (-(record[2] or 0), record[0]),
+            shard_records = balance_records_by_size(
+                regular_records,
+                target_volumes,
             )
-            for record in sorted_records:
-                available = [
-                    index
-                    for index, shard in enumerate(shard_records)
-                    if len(shard) < target_volumes
-                ]
-                destination = min(
-                    available,
-                    key=lambda index: (shard_sizes[index], len(shard_records[index])),
-                )
-                shard_records[destination].append(record)
-                shard_sizes[destination] += record[2] or 0
         else:
             shard_records = [
-                language_records[index:index + target_volumes]
-                for index in range(0, len(language_records), target_volumes)
+                regular_records[index:index + target_volumes]
+                for index in range(0, len(regular_records), target_volumes)
             ]
+
+        shard_records.extend([[record] for record in isolated_records])
+        isolated_zip_count += len(isolated_records)
 
         for shard_index, records_for_shard in enumerate(shard_records):
             shard_path = output_dir / f"{language}_{shard_index:04d}.tsv"
@@ -166,11 +209,16 @@ def create_shards(
                 writer.writerow(["htid", "language", "zip_size_bytes"])
                 writer.writerows(records_for_shard)
 
-            manifest_rows.append(shard_path.resolve())
+            manifest_rows.append((shard_path.resolve(), len(records_for_shard)))
 
     with open(manifest_path, "w", encoding="utf-8", newline="") as file:
-        for shard_path in manifest_rows:
+        for shard_path, _ in manifest_rows:
             file.write(f"{shard_path}\n")
+
+    with open(shard_counts_path, "w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter="\t", lineterminator="\n")
+        writer.writerow(["path", "record_count"])
+        writer.writerows(manifest_rows)
 
     supported = sum(
         count
@@ -186,7 +234,12 @@ def create_shards(
     print(f"Task shards: {len(manifest_rows):,}")
     if pairtree_root is not None:
         print(f"Records missing from Pairtree during sharding: {missing_zip_count:,}")
+        print(
+            "Large ZIPs isolated into one-volume shards: "
+            f"{isolated_zip_count:,}"
+        )
     print(f"Shard manifest: {manifest_path.resolve()}")
+    print(f"Shard counts: {shard_counts_path.resolve()}")
 
     for language in sorted(language_counts):
         status = "supported" if is_supported_language(language) else "unsupported"
@@ -211,6 +264,15 @@ def main():
     parser.add_argument("--target-volumes", type=int, default=100)
     parser.add_argument("--sample-seed", type=int)
     parser.add_argument("--pairtree-root", type=Path)
+    parser.add_argument(
+        "--isolate-zip-size-mb",
+        type=float,
+        default=150.0,
+        help=(
+            "Place ZIPs larger than this size into one-volume shards without "
+            "rejecting them. Use 0 to disable isolation (default: 150)."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -218,6 +280,8 @@ def main():
         parser.error("--limit cannot be negative")
     if args.target_volumes <= 0:
         parser.error("--target-volumes must be greater than zero")
+    if args.isolate_zip_size_mb < 0:
+        parser.error("--isolate-zip-size-mb cannot be negative")
 
     create_shards(
         args.input,
@@ -226,6 +290,7 @@ def main():
         args.target_volumes,
         args.sample_seed,
         args.pairtree_root,
+        args.isolate_zip_size_mb,
         args.overwrite,
     )
 

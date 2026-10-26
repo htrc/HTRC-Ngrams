@@ -67,7 +67,6 @@ METADATA_DIR="${METADATA_DIR:-$RUN_ROOT/metadata}"
 # Summary CSV export is disabled by omitting --summary-dir below.
 PENDING_DIR="${PENDING_DIR:-$RUN_ROOT/pending}"
 STATUS_DIR="${STATUS_DIR:-$RUN_ROOT/status}"
-MAX_ZIP_SIZE_MB="${MAX_ZIP_SIZE_MB:-150}"
 GZIP_LEVEL="${GZIP_LEVEL:-1}"
 
 # 4. Execute the Python workload
@@ -82,7 +81,6 @@ python3 -u run_pipeline.py \
     --metadata-dir "$METADATA_DIR" \
     --pending-dir "$PENDING_DIR" \
     --status-dir "$STATUS_DIR" \
-    --max-zip-size-mb "$MAX_ZIP_SIZE_MB" \
     --gzip-level "$GZIP_LEVEL" \
     "${INPUT_ARGS[@]}"
 

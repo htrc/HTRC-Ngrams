@@ -91,17 +91,6 @@ def htid_to_tsv_path(htid: str, output_root: Path) -> Path:
     zip_path = htid_to_zip_path(htid, output_root)
     return zip_path.with_suffix('.tsv.gz')
 
-def get_zip_size_mb(zip_path: Path) -> float:
-    """Return the compressed ZIP file size in megabytes."""
-    try:
-        return zip_path.stat().st_size / (1024 * 1024)
-    except FileNotFoundError as error:
-        raise ZipNotFoundError(zip_path, str(error)) from error
-    except PermissionError as error:
-        raise ZipPermissionError(zip_path, str(error)) from error
-    except OSError as error:
-        raise ZipReadError(zip_path, str(error)) from error
-
 def stream_volume_from_zip(zip_path: Path, stats: VolumeReadStats = None):
     """
     Generator that yields one page of text at a time.

@@ -79,7 +79,7 @@ def create_retry_shards(
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
 
-    manifest_paths = []
+    manifest_rows = []
     for group in sorted(records_by_group):
         records = records_by_group[group]
         shard_count = math.ceil(len(records) / target_volumes)
@@ -91,16 +91,23 @@ def create_retry_shards(
                 writer = csv.writer(file, delimiter="\t", lineterminator="\n")
                 writer.writerow(["htid", "language", "zip_size_bytes"])
                 writer.writerows(shard_records)
-            manifest_paths.append(shard_path.resolve())
+            manifest_rows.append((shard_path.resolve(), len(shard_records)))
 
     manifest_path = output_dir / "shards_manifest.txt"
     with open(manifest_path, "w", encoding="utf-8") as file:
-        for path in manifest_paths:
+        for path, _ in manifest_rows:
             file.write(f"{path}\n")
 
+    shard_counts_path = output_dir / "shard_counts.tsv"
+    with open(shard_counts_path, "w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter="\t", lineterminator="\n")
+        writer.writerow(["path", "record_count"])
+        writer.writerows(manifest_rows)
+
     print(f"Retry volumes: {len(matched):,}")
-    print(f"Retry shards: {len(manifest_paths):,}")
+    print(f"Retry shards: {len(manifest_rows):,}")
     print(f"Retry manifest: {manifest_path.resolve()}")
+    print(f"Retry shard counts: {shard_counts_path.resolve()}")
     return manifest_path
 
 
