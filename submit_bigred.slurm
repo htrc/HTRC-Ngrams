@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
-#SBATCH --time=1-00:00:00
+#SBATCH --time=4-00:00:00
 #SBATCH --partition=general
 #SBATCH --mail-type=END,FAIL
 #SBATCH --output=logs/ngrams_%A_%a.log
