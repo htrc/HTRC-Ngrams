@@ -8,6 +8,7 @@
 #SBATCH --mem=1GB
 #SBATCH --time=00:30:00
 #SBATCH --partition=general
+#SBATCH --qos=highprio
 
 set -euo pipefail
 

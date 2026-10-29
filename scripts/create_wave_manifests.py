@@ -33,9 +33,9 @@ def load_shard_counts(path: Path) -> dict[Path, int]:
                     f"Invalid record count for {shard_path}: "
                     f"{row['record_count']!r}"
                 ) from error
-            if record_count < 0:
+            if record_count <= 0:
                 raise RuntimeError(
-                    f"Negative record count for {shard_path}: {record_count}"
+                    f"Non-positive record count for {shard_path}: {record_count}"
                 )
             counts[shard_path] = record_count
     return counts
@@ -58,6 +58,10 @@ def create_wave_manifests(
     if len(set(shard_paths)) != len(shard_paths):
         raise RuntimeError(f"Duplicate shard paths found in {shard_manifest}")
 
+    missing = [str(path) for path in shard_paths if not path.is_file()]
+    if missing:
+        raise RuntimeError(f"Missing shard file: {missing[0]}")
+
     if shard_counts_path is not None:
         shard_record_counts = load_shard_counts(shard_counts_path)
         manifest_paths = set(shard_paths)
@@ -74,9 +78,6 @@ def create_wave_manifests(
                 f"Shard manifest/count mismatch: {'; '.join(detail)}"
             )
     else:
-        missing = [str(path) for path in shard_paths if not path.is_file()]
-        if missing:
-            raise RuntimeError(f"Missing shard file: {missing[0]}")
         shard_record_counts = {
             path: count_shard_records(path)
             for path in shard_paths

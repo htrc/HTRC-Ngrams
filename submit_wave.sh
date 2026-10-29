@@ -13,7 +13,8 @@ WAVE_INDEX="${1:?Usage: submit_wave.sh WAVE_INDEX}"
 : "${CAMPAIGN_STATUS_DIR:?CAMPAIGN_STATUS_DIR is required}"
 : "${PROVENANCE_RUN_ID:?PROVENANCE_RUN_ID is required}"
 
-MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-200}"
+MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-500}"
+HIGHPRIO_MAX_CONCURRENT_TASKS=500
 CONCURRENCY_FILE="${CONCURRENCY_FILE:-$CAMPAIGN_CONTROL_DIR/max_concurrent_tasks}"
 TASK_CPUS="${TASK_CPUS:-8}"
 TASK_MEMORY="${TASK_MEMORY:-32GB}"
@@ -27,6 +28,10 @@ if [ -f "$CONCURRENCY_FILE" ]; then
 fi
 if ! [[ "$MAX_CONCURRENT_TASKS" =~ ^[1-9][0-9]*$ ]]; then
     echo "Invalid concurrency value: $MAX_CONCURRENT_TASKS" >&2
+    exit 1
+fi
+if [ "$MAX_CONCURRENT_TASKS" -gt "$HIGHPRIO_MAX_CONCURRENT_TASKS" ]; then
+    echo "Concurrency cannot exceed the approved highprio limit of $HIGHPRIO_MAX_CONCURRENT_TASKS" >&2
     exit 1
 fi
 

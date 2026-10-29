@@ -278,15 +278,27 @@ two-column TSV (`htid`, `language`). Raw Hathifiles must be reduced to those
 columns before this step; the sharder does not infer column positions from the
 full Hathifile schema.
 
+For production, use count-balanced sharding without performing one Pairtree
+metadata lookup per volume. The supplied BigRed200 job writes a durable
+checkpoint every one million input rows and can safely resume:
+
+```bash
+mkdir -p logs
+sbatch --test-only production_shards.slurm
+sbatch production_shards.slurm
+```
+
+For a reproducible sample or a small size-balanced experiment, invoke the
+sharder directly:
+
 ```bash
 python3 scripts/create_language_shards.py \
-  --input /path/to/hathifile.txt \
-  --output-dir /path/to/test5_shards \
+  --input /path/to/hathifile.tsv \
+  --output-dir /path/to/sample_shards \
   --limit 5000 \
   --target-volumes 100 \
   --sample-seed 20261021 \
-  --pairtree-root /N/project/htrc/data/ht_text \
-  --isolate-zip-size-mb 150
+  --pairtree-root /N/project/htrc/data/ht_text
 ```
 
 `--sample-seed` produces a reproducible random sample instead of taking the
@@ -322,7 +334,7 @@ export SHARD_MANIFEST=/path/to/shards/shards_manifest.txt
 export RUN_ROOT="outputs/production_run"
 export CAMPAIGN_NAME=initial
 export WAVE_SIZE=900
-export MAX_CONCURRENT_TASKS=200
+export MAX_CONCURRENT_TASKS=500
 export FRESH_RUN=1
 bash submit_campaign.sh
 ```
@@ -445,6 +457,7 @@ missing or incomplete outputs are processed again.
 ├── submit_wave.sh
 ├── submit_bigred.slurm
 ├── finalize_run.slurm
+├── production_shards.slurm
 ├── scripts/
 │   ├── consolidate_logs.py
 │   ├── consolidate_pending.py
@@ -466,7 +479,7 @@ missing or incomplete outputs are processed again.
 - **Atomic Compressed Writes:** Volume data is written directly to a temporary gzip stream, flushed and synchronized, validated, and atomically renamed to `.tsv.gz`. No uncompressed duplicate is created.
 - **Lockless Chunking:** Array tasks do not write concurrently to a shared pending file. Each task writes its own pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Optional result summaries remain task-sharded when enabled.
 - **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that the export configuration matches the existing files. A conflicting configuration causes the pipeline to stop rather than mix incompatible outputs.
-- **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, oversized, and permission-restricted inputs from language, dependency, and tokenizer failures.
+- **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, and permission-restricted inputs from language, dependency, and tokenizer failures.
 - **Task Logging:** Each SLURM array task writes one temporary combined standard-output and standard-error log containing task start, periodic progress, task completion, and fatal errors. A dependent finalization job merges those files into `<run-root>/logs/slurm_<array-job-id>.log` and removes the temporary task logs. Volume failures and their reason codes are retained in the pending-volume TSV.
 - **Page Diagnostics:** Optional task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks when `--summary-dir` is supplied.
 - **Output Metrics:** Optional task result CSVs distinguish total tokens, exported distinct bigram types, exported bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
@@ -476,7 +489,6 @@ missing or incomplete outputs are processed again.
 - Stanza pipelines are lazily initialized and cached once per worker process.
 - Stanza bulk processing reduces per-page pipeline-call overhead while keeping
   page-level token sequences separate.
-- The configured ZIP-size guard skips compressed input files above the deployment threshold.
 
 ## Related Documentation
 

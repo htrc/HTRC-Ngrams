@@ -9,7 +9,8 @@ cd "$SCRIPT_DIR"
 SHARD_COUNTS="${SHARD_COUNTS:-$(dirname "$SHARD_MANIFEST")/shard_counts.tsv}"
 RUN_ROOT="${RUN_ROOT:-outputs/current_campaign}"
 WAVE_SIZE="${WAVE_SIZE:-900}"
-MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-200}"
+MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-500}"
+HIGHPRIO_MAX_CONCURRENT_TASKS=500
 TASK_CPUS="${TASK_CPUS:-8}"
 TASK_MEMORY="${TASK_MEMORY:-32GB}"
 CAMPAIGN_FRESH_RUN="${FRESH_RUN:-1}"
@@ -31,6 +32,10 @@ if [ ! -f "$SHARD_MANIFEST" ]; then
 fi
 if ! [[ "$MAX_CONCURRENT_TASKS" =~ ^[1-9][0-9]*$ ]]; then
     echo "MAX_CONCURRENT_TASKS must be greater than zero" >&2
+    exit 1
+fi
+if [ "$MAX_CONCURRENT_TASKS" -gt "$HIGHPRIO_MAX_CONCURRENT_TASKS" ]; then
+    echo "MAX_CONCURRENT_TASKS cannot exceed the approved highprio limit of $HIGHPRIO_MAX_CONCURRENT_TASKS" >&2
     exit 1
 fi
 if ! [[ "$TASK_CPUS" =~ ^[1-9][0-9]*$ ]]; then
