@@ -9,6 +9,10 @@ import uuid
 from pathlib import Path
 
 
+def normalize_path(value: str) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(value)))
+
+
 def atomic_write_lines(path: Path, lines) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}_{uuid.uuid4().hex[:8]}.tmp")
@@ -48,10 +52,11 @@ def main() -> None:
         wave_manifest = Path(wave["manifest"])
         with wave_manifest.open(encoding="utf-8") as file:
             shard_paths.extend(
-                Path(line.strip()).resolve()
+                normalize_path(line.strip())
                 for line in file
                 if line.strip()
             )
+    print(f"Loaded {len(shard_paths):,} remaining shard path(s).", flush=True)
 
     source_counts = Path(campaign["source_shard_counts"])
     wanted = set(shard_paths)
@@ -59,7 +64,7 @@ def main() -> None:
     with source_counts.open(encoding="utf-8", newline="") as file:
         reader = csv.DictReader(file, delimiter="\t")
         for row in reader:
-            path = Path(row["path"]).resolve()
+            path = normalize_path(row["path"])
             if path in wanted:
                 counts[path] = int(row["record_count"])
 
