@@ -9,6 +9,7 @@
 #SBATCH --time=00:30:00
 #SBATCH --partition=general
 #SBATCH --qos=highprio
+#SBATCH --mail-type=FAIL
 
 set -euo pipefail
 
@@ -25,6 +26,11 @@ cd "$SLURM_SUBMIT_DIR"
 
 finalization_status=0
 WAVE_MODE="${WAVE_MODE:-0}"
+WAVE_STRIDE="${WAVE_STRIDE:-1}"
+WAVE_ATTEMPT="${WAVE_ATTEMPT:-1}"
+MAX_WAVE_ATTEMPTS="${MAX_WAVE_ATTEMPTS:-1}"
+PRIMARY_TASK_MEMORY="${PRIMARY_TASK_MEMORY:-${TASK_MEMORY:-16GB}}"
+RETRY_TASK_MEMORY="${RETRY_TASK_MEMORY:-32GB}"
 
 if [ "$WAVE_MODE" = "1" ]; then
     : "${WAVE_INDEX:?WAVE_INDEX is required}"
@@ -74,20 +80,32 @@ if ! python3 scripts/consolidate_status.py \
 fi
 
 if [ "$finalization_status" -ne 0 ]; then
-    echo "Finalization failed; no later wave was submitted." >&2
+    if [ "$WAVE_MODE" = "1" ] && [ "$WAVE_ATTEMPT" -lt "$MAX_WAVE_ATTEMPTS" ]; then
+        NEXT_ATTEMPT=$((WAVE_ATTEMPT + 1))
+        echo "Finalization failed; retrying $WAVE_TAG with checkpoints (attempt $NEXT_ATTEMPT/$MAX_WAVE_ATTEMPTS)." >&2
+        export CAMPAIGN_FRESH_RUN=0
+        export WAVE_ATTEMPT="$NEXT_ATTEMPT"
+        export TASK_MEMORY="$RETRY_TASK_MEMORY"
+        echo "Retry task memory: $TASK_MEMORY" >&2
+        bash submit_wave.sh "$WAVE_INDEX"
+        exit 0
+    fi
+    echo "Finalization failed after $WAVE_ATTEMPT attempt(s); no later wave in this lane was submitted." >&2
     exit "$finalization_status"
 fi
 
 if [ "$WAVE_MODE" = "1" ]; then
-    NEXT_WAVE=$((WAVE_INDEX + 1))
+    NEXT_WAVE=$((WAVE_INDEX + WAVE_STRIDE))
     if [ "$NEXT_WAVE" -lt "$WAVE_COUNT" ]; then
+        export WAVE_ATTEMPT=1
+        export TASK_MEMORY="$PRIMARY_TASK_MEMORY"
         bash submit_wave.sh "$NEXT_WAVE"
     else
-        python3 scripts/finalize_campaign.py \
+        python3 scripts/finalize_campaign_if_ready.py \
             --campaign-manifest "$CAMPAIGN_MANIFEST" \
             --pending-dir "$CAMPAIGN_PENDING_DIR" \
             --status-dir "$CAMPAIGN_STATUS_DIR" \
-            --final-pending-output "$PENDING_DIR/pending_volumes.tsv"
+            --final-pending-output "$CAMPAIGN_FINAL_PENDING_OUTPUT"
     fi
 fi
 
