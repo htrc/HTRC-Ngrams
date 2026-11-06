@@ -4,8 +4,13 @@
 import argparse
 import csv
 import json
+import os
 import shutil
 from pathlib import Path
+
+
+def normalize_path(value) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(value))))
 
 
 def count_shard_records(path: Path) -> int:
@@ -21,7 +26,7 @@ def load_shard_counts(path: Path) -> dict[Path, int]:
         if not required.issubset(reader.fieldnames or []):
             raise RuntimeError(f"Invalid shard-count header in {path}")
         for row in reader:
-            shard_path = Path(row["path"]).resolve()
+            shard_path = normalize_path(row["path"])
             if shard_path in counts:
                 raise RuntimeError(
                     f"Duplicate shard path in {path}: {shard_path}"
@@ -49,7 +54,7 @@ def create_wave_manifests(
     overwrite: bool,
 ) -> Path:
     shard_paths = [
-        Path(line.strip()).resolve()
+        normalize_path(line.strip())
         for line in shard_manifest.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
@@ -57,10 +62,6 @@ def create_wave_manifests(
         raise RuntimeError(f"No shard paths found in {shard_manifest}")
     if len(set(shard_paths)) != len(shard_paths):
         raise RuntimeError(f"Duplicate shard paths found in {shard_manifest}")
-
-    missing = [str(path) for path in shard_paths if not path.is_file()]
-    if missing:
-        raise RuntimeError(f"Missing shard file: {missing[0]}")
 
     if shard_counts_path is not None:
         shard_record_counts = load_shard_counts(shard_counts_path)
@@ -101,16 +102,16 @@ def create_wave_manifests(
                 file.write(f"{path}\n")
         waves.append({
             "wave_index": wave_index,
-            "manifest": str(wave_path.resolve()),
+            "manifest": str(normalize_path(wave_path)),
             "task_count": len(paths),
             "record_count": sum(shard_record_counts[path] for path in paths),
         })
 
     campaign = {
         "schema_version": "1.0",
-        "source_shard_manifest": str(shard_manifest.resolve()),
+        "source_shard_manifest": str(normalize_path(shard_manifest)),
         "source_shard_counts": (
-            str(shard_counts_path.resolve())
+            str(normalize_path(shard_counts_path))
             if shard_counts_path is not None
             else None
         ),
@@ -128,7 +129,7 @@ def create_wave_manifests(
     print(f"Campaign records: {campaign['total_records']:,}")
     print(f"Task shards: {campaign['total_shards']:,}")
     print(f"Submission waves: {campaign['wave_count']:,}")
-    print(f"Campaign manifest: {campaign_path.resolve()}")
+    print(f"Campaign manifest: {normalize_path(campaign_path)}")
     return campaign_path
 
 
