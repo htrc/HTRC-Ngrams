@@ -199,12 +199,17 @@ volume-level types; it is not a deduplicated corpus-wide vocabulary count.
 ### Pending-Volume TSV
 
 Array tasks write temporary shards during processing. After the array reaches a
-terminal state, a dependent finalization job consolidates the available shards
-and writes one final file:
+terminal state, a dependent finalization job consolidates the available shards.
+For a single-array run, the final file is:
 
 ```text
 pending/pending_volumes.tsv
 ```
+
+For a wave campaign, each wave has a separate pending report, and campaign
+finalization writes `pending/campaigns/<campaign-name>/pending_volumes.tsv`.
+That file covers only its campaign. Multiple campaigns sharing an output root
+require final reconciliation before publishing one collection-wide pending list.
 
 The final file uses this schema:
 
@@ -216,9 +221,10 @@ htid<TAB>reason_code<TAB>detail
 human-readable context and is not intended as a stable identifier.
 
 The consolidation step deduplicates by HTID, atomically replaces the previous
-final file, and removes the completed run's temporary pending shards. After a
-retry, the final file therefore contains only volumes that remain pending in
-that retry. Concurrent runs should use different pending directories.
+file for that array or campaign, and removes its temporary pending shards. A
+retry campaign's pending file contains only volumes still pending in that retry;
+it does not automatically update earlier campaign files. Concurrent campaigns
+must not process the same shards.
 
 | Reason code | Meaning |
 | --- | --- |

@@ -26,6 +26,7 @@ cd "$SLURM_SUBMIT_DIR"
 
 finalization_status=0
 WAVE_MODE="${WAVE_MODE:-0}"
+DISPATCH_MODE="${DISPATCH_MODE:-lanes}"
 WAVE_STRIDE="${WAVE_STRIDE:-1}"
 WAVE_ATTEMPT="${WAVE_ATTEMPT:-1}"
 MAX_WAVE_ATTEMPTS="${MAX_WAVE_ATTEMPTS:-1}"
@@ -80,7 +81,8 @@ if ! python3 scripts/consolidate_status.py \
 fi
 
 if [ "$finalization_status" -ne 0 ]; then
-    if [ "$WAVE_MODE" = "1" ] && [ "$WAVE_ATTEMPT" -lt "$MAX_WAVE_ATTEMPTS" ]; then
+    if [ "$WAVE_MODE" = "1" ] && [ "$DISPATCH_MODE" = "lanes" ] &&
+        [ "$WAVE_ATTEMPT" -lt "$MAX_WAVE_ATTEMPTS" ]; then
         NEXT_ATTEMPT=$((WAVE_ATTEMPT + 1))
         echo "Finalization failed; retrying $WAVE_TAG with checkpoints (attempt $NEXT_ATTEMPT/$MAX_WAVE_ATTEMPTS)." >&2
         export CAMPAIGN_FRESH_RUN=0
@@ -90,11 +92,11 @@ if [ "$finalization_status" -ne 0 ]; then
         bash submit_wave.sh "$WAVE_INDEX"
         exit 0
     fi
-    echo "Finalization failed after $WAVE_ATTEMPT attempt(s); no later wave in this lane was submitted." >&2
+    echo "Finalization failed for array $ARRAY_JOB_ID on attempt $WAVE_ATTEMPT." >&2
     exit "$finalization_status"
 fi
 
-if [ "$WAVE_MODE" = "1" ]; then
+if [ "$WAVE_MODE" = "1" ] && [ "$DISPATCH_MODE" = "lanes" ]; then
     NEXT_WAVE=$((WAVE_INDEX + WAVE_STRIDE))
     if [ "$NEXT_WAVE" -lt "$WAVE_COUNT" ]; then
         export WAVE_ATTEMPT=1

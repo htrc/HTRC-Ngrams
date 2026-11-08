@@ -63,21 +63,25 @@ fi
 echo "📦 Submitting $INPUT_DESCRIPTION across $((ARRAY_MAX+1)) task(s)..."
 echo "🖥️  Task resources: $TASK_CPUS CPUs, $TASK_MEMORY memory"
 mkdir -p "$TASK_LOG_DIR"
+export ID_LIST SHARD_MANIFEST INPUT_MODE FRESH_RUN RUN_ROOT PENDING_DIR STATUS_DIR
 ARRAY_SUBMISSION=$(sbatch --parsable \
     --nodes=1 \
     --ntasks=1 \
     --cpus-per-task="$TASK_CPUS" \
     --mem="$TASK_MEMORY" \
-    --export=ALL,ID_LIST="$ID_LIST",SHARD_MANIFEST="$SHARD_MANIFEST",INPUT_MODE="$INPUT_MODE",FRESH_RUN="$FRESH_RUN",RUN_ROOT="$RUN_ROOT",PENDING_DIR="$PENDING_DIR",STATUS_DIR="$STATUS_DIR" \
+    --export=ALL \
     --output="$TASK_LOG_DIR/task_%A_%a.log" \
     --array=0-$ARRAY_MAX \
     submit_bigred.slurm)
 ARRAY_JOB_ID=${ARRAY_SUBMISSION%%;*}
 echo "✅ Array job: $ARRAY_JOB_ID"
 
+PENDING_RUN_ID="slurm_$ARRAY_JOB_ID"
+WAVE_TASK_COUNT=$((ARRAY_MAX+1))
+export WAVE_MODE=0 PENDING_RUN_ID TASK_LOG_DIR RUN_LOG_DIR ARRAY_JOB_ID WAVE_TASK_COUNT
 FINALIZATION_SUBMISSION=$(sbatch --parsable \
     --dependency=afterany:"$ARRAY_JOB_ID" \
-    --export=ALL,PENDING_DIR="$PENDING_DIR",STATUS_DIR="$STATUS_DIR",PENDING_RUN_ID="slurm_$ARRAY_JOB_ID",TASK_LOG_DIR="$TASK_LOG_DIR",RUN_LOG_DIR="$RUN_LOG_DIR",ARRAY_JOB_ID="$ARRAY_JOB_ID",WAVE_TASK_COUNT="$((ARRAY_MAX+1))" \
+    --export=ALL \
     --output="$RUN_LOG_DIR/finalize_%j.log" \
     finalize_run.slurm)
 FINALIZATION_JOB_ID=${FINALIZATION_SUBMISSION%%;*}

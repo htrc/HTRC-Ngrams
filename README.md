@@ -324,9 +324,9 @@ bash submit.sh
 ```
 
 Large runs use bounded waves so the collection never attempts to submit every
-shard as one SLURM array. `submit_campaign.sh` submits one wave, limits active
-tasks, validates every task after completion, and submits the next wave only
-when the current wave has complete terminal accounting. The first wave writes
+shard as one SLURM array. By default, `submit_campaign.sh` uses lane scheduling:
+each finalizer validates its wave and then submits the next wave in that lane.
+The first wave writes
 one campaign-level provenance manifest; later waves reuse the same run context:
 
 ```bash
@@ -340,14 +340,14 @@ bash submit_campaign.sh
 ```
 
 The submission resource profile is configurable without editing the SLURM
-scripts. The validated default remains eight CPUs and 32 GB per array task:
+scripts. The current defaults are eight CPUs and 16 GB per array task:
 
 ```bash
 export TASK_CPUS=8
-export TASK_MEMORY=32GB
+export TASK_MEMORY=16GB
 ```
 
-`MAX_CONCURRENT_TASKS` sets the initial array throttle. The campaign stores the
+In lane mode, `MAX_CONCURRENT_TASKS` sets the initial array throttle. The campaign stores the
 current value in `control/<campaign>/max_concurrent_tasks`, and every later wave
 reads that file before submission. To raise or lower concurrency for future
 waves without restarting the campaign, replace the file atomically:
@@ -364,6 +364,70 @@ command approved by the cluster team, for example:
 
 ```bash
 scontrol update JobId=<active-array-job-id> ArrayTaskThrottle=500
+```
+
+For a handoff from the existing `rolling` campaign, its
+`RUN_ROOT/control/rolling/` directory holds wave plans and submission records,
+not bigram output. After deploying the updated code, create a signal there to
+let active waves finish without submitting the next wave in either lane:
+
+```bash
+export RUN_ROOT=/N/project/htrc/HTRC-Ngrams/outputs/production_20261001
+touch "$RUN_ROOT/control/rolling/handoff_to_third_campaign"
+```
+
+Retries of an incomplete active wave remain enabled. The signal does not
+cancel running jobs or start the third campaign. Wait for both lanes' current
+arrays and finalizers to finish, then build the remaining-shard manifest from
+the earliest unfinished wave before submitting another campaign. Any wave
+submitted before the signal took effect must also be accounted for.
+
+For a new campaign, `DISPATCH_MODE=continuous` enables an opt-in controller
+that submits another wave as soon as the user's queue has room. It does not
+wait for every task in older waves to finish. Continuous arrays have no
+per-array `%` throttle; Slurm still enforces the approved highprio and node
+limits. `QUEUE_BUDGET=980` is a ceiling on this user's total queued and running
+jobs, including other jobs and finalizers, not a guarantee of 500 running
+tasks. The controller runs as a one-CPU Slurm job and hands off to a successor
+before its one-day limit. It retries incomplete waves with checkpointing and
+validates per-wave pending and status reports before marking the campaign
+complete.
+
+```bash
+export SHARD_MANIFEST=/path/to/nonoverlapping_remaining_shards/shards_manifest.txt
+export RUN_ROOT=/N/project/htrc/HTRC-Ngrams/outputs/production_20261001
+export CAMPAIGN_NAME=third_campaign
+export DISPATCH_MODE=continuous
+export CAMPAIGN_LANES=1
+export WAVE_SIZE=450
+export QUEUE_BUDGET=980
+export FRESH_RUN=0
+bash submit_campaign.sh
+```
+
+This mode affects only the newly named campaign. Do not submit shards that an
+existing campaign is still processing. The new campaign keeps bigrams under
+the same `RUN_ROOT/bigrams` and writes its own wave reports under
+`RUN_ROOT/pending/campaigns/<campaign-name>/waves` and
+`RUN_ROOT/status/campaigns/<campaign-name>/waves`. Its campaign-wide pending
+file covers only its own shards; pending reports from earlier campaigns must
+be reconciled separately before declaring the whole production collection
+complete.
+
+The controller records submissions in `control/<campaign-name>/submissions.tsv`
+and uses `dispatch_intent.json` to stop rather than risk a duplicate submission
+if Slurm accepted a job but ledger writing was interrupted. Do not delete an
+unresolved intent without checking Slurm and the ledger. A failed or timed-out
+controller does not release its `afterok` successor; active wave tasks can
+finish, but dispatch must be restarted manually after investigation. To restart a stopped
+continuous controller after resolving the cause, submit it from the repository
+with its saved configuration:
+
+```bash
+export DISPATCH_CONFIG="$RUN_ROOT/control/$CAMPAIGN_NAME/dispatch_config.json"
+sbatch --export=ALL,DISPATCH_CONFIG="$DISPATCH_CONFIG" \
+  --output="$RUN_ROOT/logs/dispatch_${CAMPAIGN_NAME}_%j.log" \
+  dispatch_campaign.slurm
 ```
 
 For a 30,000-volume rehearsal, a smaller wave size such as `200` exercises
@@ -402,10 +466,11 @@ writes one final file, and removes the consolidated shards:
 <pending-dir>/pending_volumes.tsv
 ```
 
-For wave campaigns, every wave first writes an immutable pending report under
-`pending/campaigns/<campaign-name>/waves/`. The final wave validates that
-successful plus pending volumes equals the selected input count, then writes
-the single campaign-wide `pending/pending_volumes.tsv`. The final file contains
+For wave campaigns, every wave first writes a pending report under
+`pending/campaigns/<campaign-name>/waves/`. After all waves are accounted for,
+campaign finalization validates that successful plus pending volumes equals
+the selected input count and writes
+`pending/campaigns/<campaign-name>/pending_volumes.tsv`. The final file contains
 a header even when no volumes remain pending.
 
 Review the reason codes before retrying. Missing source data and unsupported
@@ -415,7 +480,7 @@ ZIP-size hints from the original shard manifest:
 
 ```bash
 python3 scripts/create_retry_shards.py \
-  --pending-file outputs/production_run/pending/pending_volumes.tsv \
+  --pending-file outputs/production_run/pending/campaigns/initial/pending_volumes.tsv \
   --source-manifest /path/to/original/shards_manifest.txt \
   --output-dir /path/to/retry_shards \
   --target-volumes 100
@@ -436,11 +501,12 @@ Existing completed volumes are skipped. A retry with changed runtime
 configuration must use a new output directory because `run_metadata.json`
 intentionally rejects configuration conflicts.
 
-When the retry uses the same `PENDING_DIR`, its consolidation job replaces
-`pending_volumes.tsv` with only the volumes that still fail. Volumes that
-succeed on retry therefore disappear from the final pending file. Do not run
-overlapping submissions against the same `RUN_ROOT`; use a separate run root
-for concurrent submissions.
+Each retry campaign has its own pending report. Before publishing one pending
+file for the collection, reconcile the original and retry outcomes so volumes
+that succeeded on retry are removed. Do not process
+the same shard simultaneously in separate campaigns. Continuous waves within
+one campaign share a run root because each wave owns distinct shards and
+writes separate pending and status reports.
 
 For a cancelled array where no configuration changed, resubmitting the
 original HTID list is also safe: completed TSVs are checkpointed and only
@@ -455,6 +521,7 @@ missing or incomplete outputs are processed again.
 ├── submit.sh
 ├── submit_campaign.sh
 ├── submit_wave.sh
+├── dispatch_campaign.slurm
 ├── submit_bigred.slurm
 ├── finalize_run.slurm
 ├── production_shards.slurm
@@ -462,6 +529,7 @@ missing or incomplete outputs are processed again.
 │   ├── consolidate_logs.py
 │   ├── consolidate_pending.py
 │   ├── consolidate_status.py
+│   ├── dispatch_campaign.py
 │   ├── create_language_shards.py
 │   ├── create_retry_shards.py
 │   ├── create_wave_manifests.py
