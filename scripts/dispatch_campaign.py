@@ -83,6 +83,47 @@ def active_jobs(user: str) -> tuple[set[str], int]:
     return set(job_ids), len(job_ids)
 
 
+def read_queue_budget(path: Path, maximum: int, previous: int | None = None) -> int:
+    try:
+        value = int(path.read_text(encoding="utf-8").strip())
+        if not 1 <= value <= maximum:
+            raise ValueError(
+                f"queue budget must be between 1 and {maximum}, found {value}"
+            )
+        return value
+    except (OSError, ValueError) as error:
+        if previous is None:
+            raise RuntimeError(f"Invalid queue-budget control file {path}: {error}")
+        print(
+            f"Queue-budget control warning: {error}; retaining {previous}",
+            flush=True,
+        )
+        return previous
+
+
+def initialize_queue_budget(path: Path, maximum: int, configured: str) -> None:
+    if path.exists():
+        return
+    try:
+        value = int(configured)
+    except ValueError:
+        value = 600
+    if not 1 <= value <= maximum:
+        value = min(600, maximum)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(f"{value}\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print(f"Initialized queue-budget control file at {value}", flush=True)
+
+
+def find_handoff_marker(control_dir: Path) -> Path | None:
+    return next(iter(sorted(control_dir.glob("handoff_to_*_campaign"))), None)
+
+
 def finalizer_state(job_id: str) -> str | None:
     result = subprocess.run(
         ["sacct", "-X", "-n", "-P", "-j", job_id, "--format=JobID,State"],
@@ -241,11 +282,20 @@ def main() -> None:
     submissions_path = control_dir / "submissions.tsv"
     intent_path = control_dir / "dispatch_intent.json"
     summary_path = status_dir / "campaign_summary.json"
-    queue_budget = int(os.environ["QUEUE_BUDGET"])
+    queue_budget_path = Path(
+        os.environ.get("QUEUE_BUDGET_FILE", control_dir / "queue_budget")
+    )
+    max_queue_budget = int(os.environ.get("MAX_QUEUE_BUDGET", "900"))
+    if not 1 <= max_queue_budget <= 999:
+        raise RuntimeError("MAX_QUEUE_BUDGET must be between 1 and 999")
+    initialize_queue_budget(
+        queue_budget_path,
+        max_queue_budget,
+        os.environ.get("QUEUE_BUDGET", "600"),
+    )
+    queue_budget = read_queue_budget(queue_budget_path, max_queue_budget)
     max_attempts = int(os.environ["MAX_WAVE_ATTEMPTS"])
     user = pwd.getpwuid(os.getuid()).pw_name
-    if not 1 <= queue_budget <= 980:
-        raise RuntimeError("QUEUE_BUDGET must be between 1 and 980")
     if (control_dir / "dispatch_mode").read_text(encoding="utf-8").strip() != "continuous":
         raise RuntimeError("Campaign was not created for continuous dispatch")
 
@@ -260,6 +310,14 @@ def main() -> None:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         if summary_path.is_file():
             print(f"Campaign already complete: {summary_path}", flush=True)
+            return
+        handoff_marker = find_handoff_marker(control_dir)
+        if handoff_marker is not None:
+            print(
+                f"Campaign handoff requested by {handoff_marker}; "
+                "no new waves submitted",
+                flush=True,
+            )
             return
         reconcile_intent(intent_path, read_submissions(submissions_path, wave_count))
         successor = subprocess.run(
@@ -283,6 +341,14 @@ def main() -> None:
         awaiting_visibility = None
         last_heartbeat = 0.0
         while time.monotonic() < deadline:
+            handoff_marker = find_handoff_marker(control_dir)
+            if handoff_marker is not None:
+                print(
+                    f"Campaign handoff requested by {handoff_marker}; "
+                    "dispatcher stopping after existing submissions",
+                    flush=True,
+                )
+                return
             submissions = read_submissions(submissions_path, wave_count)
             reconcile_intent(intent_path, submissions)
             ready = wave_reports(pending_dir, status_dir)
@@ -295,6 +361,17 @@ def main() -> None:
                 return
 
             try:
+                updated_budget = read_queue_budget(
+                    queue_budget_path,
+                    max_queue_budget,
+                    previous=queue_budget,
+                )
+                if updated_budget != queue_budget:
+                    print(
+                        f"Queue budget updated: {queue_budget} -> {updated_budget}",
+                        flush=True,
+                    )
+                    queue_budget = updated_budget
                 active_ids, active_count = active_jobs(user)
                 if time.monotonic() - last_heartbeat >= 900:
                     print(

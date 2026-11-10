@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1GB
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #SBATCH --partition=general
 #SBATCH --qos=highprio
 #SBATCH --mail-type=FAIL
@@ -50,16 +50,6 @@ else
     STATUS_OUTPUT="$STATUS_DIR/slurm_${ARRAY_JOB_ID}.json"
 fi
 
-if ! python3 scripts/consolidate_logs.py \
-    --task-log-dir "$TASK_LOG_DIR" \
-    --output "$LOG_OUTPUT" \
-    --job-id "$ARRAY_JOB_ID" \
-    --expected-logs "$WAVE_TASK_COUNT" \
-    --delete-task-logs; then
-    echo "Task-log consolidation failed for array $ARRAY_JOB_ID" >&2
-    finalization_status=1
-fi
-
 if ! python3 scripts/consolidate_pending.py \
     --pending-dir "$PENDING_DIR" \
     --run-id "$PENDING_RUN_ID" \
@@ -78,6 +68,19 @@ if ! python3 scripts/consolidate_status.py \
     --delete-shards; then
     echo "Task-status consolidation failed for array $ARRAY_JOB_ID" >&2
     finalization_status=1
+fi
+
+if [ "$finalization_status" -eq 0 ]; then
+    LOG_CONSOLIDATION_TIMEOUT="${LOG_CONSOLIDATION_TIMEOUT:-30m}"
+    if ! timeout "$LOG_CONSOLIDATION_TIMEOUT" \
+        python3 scripts/consolidate_logs.py \
+        --task-log-dir "$TASK_LOG_DIR" \
+        --output "$LOG_OUTPUT" \
+        --job-id "$ARRAY_JOB_ID" \
+        --expected-logs "$WAVE_TASK_COUNT" \
+        --delete-task-logs; then
+        echo "Optional task-log consolidation did not complete for array $ARRAY_JOB_ID; pending and status reports are intact." >&2
+    fi
 fi
 
 if [ "$finalization_status" -ne 0 ]; then

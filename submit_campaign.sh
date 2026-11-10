@@ -10,13 +10,13 @@ SHARD_COUNTS="${SHARD_COUNTS:-$(dirname "$SHARD_MANIFEST")/shard_counts.tsv}"
 RUN_ROOT="${RUN_ROOT:-outputs/current_campaign}"
 DISPATCH_MODE="${DISPATCH_MODE:-lanes}"
 if [ "$DISPATCH_MODE" = "continuous" ]; then
-    WAVE_SIZE="${WAVE_SIZE:-450}"
+    WAVE_SIZE="${WAVE_SIZE:-100}"
 else
     WAVE_SIZE="${WAVE_SIZE:-900}"
 fi
 MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-500}"
-HIGHPRIO_MAX_CONCURRENT_TASKS=500
-QUEUE_BUDGET="${QUEUE_BUDGET:-980}"
+MAX_QUEUE_BUDGET="${MAX_QUEUE_BUDGET:-900}"
+QUEUE_BUDGET="${QUEUE_BUDGET:-600}"
 CAMPAIGN_LANES="${CAMPAIGN_LANES:-1}"
 TASK_CPUS="${TASK_CPUS:-8}"
 TASK_MEMORY="${TASK_MEMORY:-16GB}"
@@ -39,8 +39,14 @@ if ! [[ "$WAVE_SIZE" =~ ^[1-9][0-9]*$ ]] || [ "$WAVE_SIZE" -gt 999 ]; then
     echo "WAVE_SIZE must be between 1 and 999" >&2
     exit 1
 fi
-if ! [[ "$QUEUE_BUDGET" =~ ^[1-9][0-9]*$ ]] || [ "$QUEUE_BUDGET" -gt 980 ]; then
-    echo "QUEUE_BUDGET must be between 1 and 980" >&2
+if ! [[ "$MAX_QUEUE_BUDGET" =~ ^[1-9][0-9]*$ ]] ||
+    [ "$MAX_QUEUE_BUDGET" -gt 999 ]; then
+    echo "MAX_QUEUE_BUDGET must be between 1 and 999" >&2
+    exit 1
+fi
+if ! [[ "$QUEUE_BUDGET" =~ ^[1-9][0-9]*$ ]] ||
+    [ "$QUEUE_BUDGET" -gt "$MAX_QUEUE_BUDGET" ]; then
+    echo "QUEUE_BUDGET must be between 1 and MAX_QUEUE_BUDGET ($MAX_QUEUE_BUDGET)" >&2
     exit 1
 fi
 
@@ -60,8 +66,8 @@ if ! [[ "$MAX_CONCURRENT_TASKS" =~ ^[1-9][0-9]*$ ]]; then
     echo "MAX_CONCURRENT_TASKS must be greater than zero" >&2
     exit 1
 fi
-if [ "$MAX_CONCURRENT_TASKS" -gt "$HIGHPRIO_MAX_CONCURRENT_TASKS" ]; then
-    echo "MAX_CONCURRENT_TASKS cannot exceed the approved highprio limit of $HIGHPRIO_MAX_CONCURRENT_TASKS" >&2
+if [ "$MAX_CONCURRENT_TASKS" -gt "$MAX_QUEUE_BUDGET" ]; then
+    echo "MAX_CONCURRENT_TASKS cannot exceed MAX_QUEUE_BUDGET ($MAX_QUEUE_BUDGET)" >&2
     exit 1
 fi
 if ! [[ "$CAMPAIGN_LANES" =~ ^[1-9][0-9]*$ ]]; then
@@ -69,8 +75,8 @@ if ! [[ "$CAMPAIGN_LANES" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 if [ "$DISPATCH_MODE" = "lanes" ] &&
-    [ $((MAX_CONCURRENT_TASKS * CAMPAIGN_LANES)) -gt "$HIGHPRIO_MAX_CONCURRENT_TASKS" ]; then
-    echo "Combined lane concurrency cannot exceed the approved highprio limit of $HIGHPRIO_MAX_CONCURRENT_TASKS" >&2
+    [ $((MAX_CONCURRENT_TASKS * CAMPAIGN_LANES)) -gt "$MAX_QUEUE_BUDGET" ]; then
+    echo "Combined lane concurrency cannot exceed MAX_QUEUE_BUDGET ($MAX_QUEUE_BUDGET)" >&2
     exit 1
 fi
 if [ "$DISPATCH_MODE" = "lanes" ] &&
@@ -117,6 +123,11 @@ mkdir -p "$CAMPAIGN_CONTROL_DIR" "$RUN_ROOT/logs" \
     "$CAMPAIGN_PENDING_DIR/waves" "$CAMPAIGN_STATUS_DIR/waves" \
     "$RUN_ROOT/metadata"
 
+QUEUE_BUDGET_FILE="$CAMPAIGN_CONTROL_DIR/queue_budget"
+QUEUE_BUDGET_TMP="$QUEUE_BUDGET_FILE.$$.tmp"
+printf "%s\n" "$QUEUE_BUDGET" > "$QUEUE_BUDGET_TMP"
+mv "$QUEUE_BUDGET_TMP" "$QUEUE_BUDGET_FILE"
+
 WAVE_DIR="$CAMPAIGN_CONTROL_DIR/waves"
 WAVE_ARGS=(
     --shard-manifest "$SHARD_MANIFEST"
@@ -141,7 +152,7 @@ printf "wave_index\tarray_job_id\tfinalizer_job_id\n" \
     > "$SUBMISSIONS_FILE"
 
 export RUN_ROOT WAVE_DIR CAMPAIGN_MANIFEST MAX_CONCURRENT_TASKS
-export DISPATCH_MODE QUEUE_BUDGET
+export DISPATCH_MODE QUEUE_BUDGET QUEUE_BUDGET_FILE MAX_QUEUE_BUDGET
 export CONCURRENCY_FILE
 export TASK_CPUS TASK_MEMORY PRIMARY_TASK_MEMORY RETRY_TASK_MEMORY
 export CAMPAIGN_FRESH_RUN CAMPAIGN_NAME CAMPAIGN_CONTROL_DIR
@@ -175,6 +186,7 @@ required = (
     "RUN_ROOT", "CAMPAIGN_NAME", "TASK_CPUS", "TASK_MEMORY",
     "PRIMARY_TASK_MEMORY", "RETRY_TASK_MEMORY", "CAMPAIGN_FRESH_RUN",
     "PROVENANCE_RUN_ID", "MAX_WAVE_ATTEMPTS", "QUEUE_BUDGET",
+    "QUEUE_BUDGET_FILE", "MAX_QUEUE_BUDGET",
     "MAX_CONCURRENT_TASKS", "CAMPAIGN_LANES", "WAVE_STRIDE",
     "CONCURRENCY_FILE",
 )

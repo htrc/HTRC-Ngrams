@@ -382,25 +382,71 @@ arrays and finalizers to finish, then build the remaining-shard manifest from
 the earliest unfinished wave before submitting another campaign. Any wave
 submitted before the signal took effect must also be accounted for.
 
+For a later campaign handoff, derive the first unfinished wave from finalized
+pending and status reports instead of entering a wave number manually:
+
+```bash
+touch "$RUN_ROOT/control/third_campaign/handoff_to_fourth_campaign"
+```
+
+The continuous dispatcher checks for `handoff_to_*_campaign` markers during
+every loop. The marker stops new wave submissions without cancelling active
+arrays or finalizers. Wait for those existing jobs to drain before creating the
+next campaign's input:
+
+```bash
+python3 scripts/create_remaining_shard_manifest.py \
+  --campaign-manifest "$RUN_ROOT/control/third_campaign/waves/campaign_manifest.json" \
+  --pending-wave-dir "$RUN_ROOT/pending/campaigns/third_campaign/waves" \
+  --status-wave-dir "$RUN_ROOT/status/campaigns/third_campaign/waves" \
+  --output-dir "$RUN_ROOT/control/fourth_campaign_input"
+```
+
+The command validates every source wave manifest, shard count and record count.
+It proves that the finalized prefix plus the generated remaining suffix exactly
+cover the source campaign, and writes `handoff_summary.json` with
+`coverage_verified: true`. Finalized waves after the first unfinished wave are
+intentionally included again so checkpointing can skip their existing outputs
+without creating a coverage gap.
+
 For a new campaign, `DISPATCH_MODE=continuous` enables an opt-in controller
 that submits another wave as soon as the user's queue has room. It does not
 wait for every task in older waves to finish. Continuous arrays have no
-per-array `%` throttle; Slurm still enforces the approved highprio and node
-limits. `QUEUE_BUDGET=980` is a ceiling on this user's total queued and running
-jobs, including other jobs and finalizers, not a guarantee of 500 running
-tasks. The controller runs as a one-CPU Slurm job and hands off to a successor
+per-array `%` throttle. The application-level queue budget prevents the user
+from submitting above the configured campaign ceiling, while Slurm still
+enforces the cluster's configured node and QOS constraints. The continuous
+defaults use 100-task waves, `QUEUE_BUDGET=600` and a maximum live budget of
+900 jobs.
+That budget is a ceiling on this user's total queued and running jobs,
+including unrelated jobs, dispatchers and finalizers; it is not a guarantee of
+that many running bigram tasks. Smaller waves allow new work to enter the queue
+before an older wave reaches its long tail without exceeding the configured
+budget. The controller runs as a one-CPU SLURM job and hands off to a successor
 before its one-day limit. It retries incomplete waves with checkpointing and
 validates per-wave pending and status reports before marking the campaign
 complete.
 
+The dispatcher rereads `control/<campaign-name>/queue_budget` during every
+loop. Change the budget atomically without stopping the campaign:
+
+```bash
+CONTROL="$RUN_ROOT/control/$CAMPAIGN_NAME/queue_budget"
+printf '900\n' > "${CONTROL}.tmp" && mv "${CONTROL}.tmp" "$CONTROL"
+```
+
+Use the same command with `600` to restore the normal budget. Values above the
+campaign's `MAX_QUEUE_BUDGET` are rejected and the last valid value remains in
+use.
+
 ```bash
 export SHARD_MANIFEST=/path/to/nonoverlapping_remaining_shards/shards_manifest.txt
 export RUN_ROOT=/N/project/htrc/HTRC-Ngrams/outputs/production_20261001
-export CAMPAIGN_NAME=third_campaign
+export CAMPAIGN_NAME=fourth_campaign
 export DISPATCH_MODE=continuous
 export CAMPAIGN_LANES=1
-export WAVE_SIZE=450
-export QUEUE_BUDGET=980
+export WAVE_SIZE=100
+export QUEUE_BUDGET=600
+export MAX_QUEUE_BUDGET=900
 export FRESH_RUN=0
 bash submit_campaign.sh
 ```
@@ -413,6 +459,10 @@ the same `RUN_ROOT/bigrams` and writes its own wave reports under
 file covers only its own shards; pending reports from earlier campaigns must
 be reconciled separately before declaring the whole production collection
 complete.
+
+Wave finalizers request two hours. They consolidate the essential pending and
+status records before attempting bounded, optional task-log consolidation, so
+slow log I/O cannot invalidate an otherwise complete wave.
 
 The controller records submissions in `control/<campaign-name>/submissions.tsv`
 and uses `dispatch_intent.json` to stop rather than risk a duplicate submission
@@ -531,6 +581,7 @@ missing or incomplete outputs are processed again.
 │   ├── consolidate_status.py
 │   ├── dispatch_campaign.py
 │   ├── create_language_shards.py
+│   ├── create_remaining_shard_manifest.py
 │   ├── create_retry_shards.py
 │   ├── create_wave_manifests.py
 │   └── finalize_campaign.py
@@ -548,7 +599,7 @@ missing or incomplete outputs are processed again.
 - **Lockless Chunking:** Array tasks do not write concurrently to a shared pending file. Each task writes its own pending shard. A dependent single-process job then atomically replaces `<pending-dir>/pending_volumes.tsv` and removes the completed run's pending shards. Optional result summaries remain task-sharded when enabled.
 - **Configuration Fingerprinting:** If you restart a run using an existing `--output-dir`, the script reads `run_metadata.json` from that output directory to verify that the export configuration matches the existing files. A conflicting configuration causes the pipeline to stop rather than mix incompatible outputs.
 - **Structured Failure Reporting:** Task-specific pending TSVs contain `htid`, `reason_code`, and `detail`. Stable codes distinguish missing, corrupt, unreadable, and permission-restricted inputs from language, dependency, and tokenizer failures.
-- **Task Logging:** Each SLURM array task writes one temporary combined standard-output and standard-error log containing task start, periodic progress, task completion, and fatal errors. A dependent finalization job merges those files into `<run-root>/logs/slurm_<array-job-id>.log` and removes the temporary task logs. Volume failures and their reason codes are retained in the pending-volume TSV.
+- **Task Logging:** Each SLURM array task writes one temporary combined standard-output and standard-error log containing task start, periodic progress, task completion, and fatal errors. After essential pending and status reports are finalized, bounded best-effort log consolidation merges those files into `<run-root>/logs/slurm_<array-job-id>.log`. A slow log merge does not invalidate the wave's data reports. Volume failures and their reason codes are retained in the pending-volume TSV.
 - **Page Diagnostics:** Optional task result CSVs record source text pages, readable pages, failed page reads, and Latin-1 decoding fallbacks when `--summary-dir` is supplied.
 - **Output Metrics:** Optional task result CSVs distinguish total tokens, exported distinct bigram types, exported bigram occurrences, singleton percentage, and the actual completed TSV size. Storage reporting is based on the exported TSV rather than an estimated serialization format.
 - Pairtree ZIPs are streamed in bounded 100-page batches rather than loaded as one volume.

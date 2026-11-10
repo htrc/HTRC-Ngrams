@@ -199,7 +199,9 @@ volume-level types; it is not a deduplicated corpus-wide vocabulary count.
 ### Pending-Volume TSV
 
 Array tasks write temporary shards during processing. After the array reaches a
-terminal state, a dependent finalization job consolidates the available shards.
+terminal state, a dependent finalization job first consolidates and validates
+the essential pending and status shards. Task-log consolidation is optional and
+cannot invalidate pending and status reports that were already completed.
 For a single-array run, the final file is:
 
 ```text
