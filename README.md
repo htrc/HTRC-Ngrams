@@ -495,6 +495,29 @@ Monitor a submitted job with the scheduler tools provided by the cluster:
 squeue -u "$USER"
 ```
 
+### Original-Wave Progress
+
+Later recovery campaigns can use smaller waves and can overlap work completed
+by earlier campaigns. Use the original-wave monitor to map every finalized
+campaign report back to the original production waves:
+
+```bash
+python3 scripts/monitor_original_wave_progress.py \
+  --run-root /N/project/htrc/HTRC-Ngrams/outputs/production_20261001
+```
+
+The report shows the exact original wave count, the contiguous completed prefix,
+the first incomplete original wave, its accounted shard count, and any later
+waves completed out of order. An original task shard is accounted only after a
+campaign wave has valid status and pending reports proving that every volume
+ended as either a successful output or a pending record.
+
+The first invocation creates a resumable SQLite index under
+`control/original_wave_monitor/`. It may take several minutes on the shared
+filesystem. Later invocations reuse the index and process only newly finalized
+campaign waves. The monitor reads control and report files only; it does not
+modify bigrams, pending reports, or running SLURM jobs.
+
 The pipeline uses checkpoint validation. An atomically published `.tsv.gz`
 with a valid gzip signature and TSV header is treated as complete and skipped.
 `FRESH_RUN=1` disables these checks for a guaranteed-new campaign. Recovery and
@@ -582,6 +605,7 @@ missing or incomplete outputs are processed again.
 │   ├── dispatch_campaign.py
 │   ├── create_language_shards.py
 │   ├── create_remaining_shard_manifest.py
+│   ├── monitor_original_wave_progress.py
 │   ├── create_retry_shards.py
 │   ├── create_wave_manifests.py
 │   └── finalize_campaign.py
